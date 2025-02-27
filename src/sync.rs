@@ -47,109 +47,78 @@ impl Default for SyncOptions {
     }
 }
 
-pub struct Sync {
-    source: PathBuf,
-    destination: PathBuf,
-    options: SyncOptions,
+pub fn parallelism(parallelism: usize) -> Parallelism {
+    match parallelism {
+        1 => Parallelism::Serial,
+        n => Parallelism::RayonNewPool(n),
+    }
 }
 
-impl Sync {
-    pub fn new(source: &Path, destination: &Path, options: SyncOptions) -> Sync {
-        Sync {
-            source: source.to_path_buf(),
-            destination: destination.to_path_buf(),
-            options,
-        }
-    }
-
-    pub fn parallelism(&self) -> Parallelism {
-        match self.options.parallelism {
-            1 => Parallelism::Serial,
-            n => Parallelism::RayonNewPool(n),
-        }
-    }
-
-    pub fn sync(&self) -> Result<u64, Error> {
-        let mut dirs_copied = 0;
-        let mut dirs_total = 0;
-        let mut files_copied = 0;
-        let mut files_total = 0;
-        let mut links_copied = 0;
-        let mut links_total = 0;
-        let mut errors = 0;
-        let mut bytes_copied = 0;
-        let mut bytes_total = 0;
-        let walk_dir = WalkDir::new(self.source.clone())
-            .parallelism(self.parallelism())
-            .follow_links(false)
-            .skip_hidden(false);
-        let now = Instant::now();
-        let mut previous = now;
-        let mut bytes_prevoius = 0;
-        for dir_entry in walk_dir {
-            match dir_entry {
-                Ok(dir_entry) => {
-                    let source_path_buf = dir_entry.path();
-                    let source = source_path_buf.strip_prefix(&self.source).unwrap();
-                    let destination = self.destination.join(source);
-                    if dir_entry.file_type.is_dir() {
-                        if let SyncResult::Copied = self.sync_dir(&dir_entry, &destination)? {
-                            dirs_copied += 1;
+pub fn sync(source: &Path, destination: &Path, options: SyncOptions) -> Result<u64, Error> {
+    let mut dirs_copied: u64 = 0;
+    let mut dirs_total: u64 = 0;
+    let mut files_copied: u64 = 0;
+    let mut files_total: u64 = 0;
+    let mut links_copied: u64 = 0;
+    let mut links_total: u64 = 0;
+    let mut errors: u64 = 0;
+    let mut bytes_copied: u64 = 0;
+    let mut bytes_total: u64 = 0;
+    let walk_dir = WalkDir::new(source.clone())
+        .parallelism(parallelism(options.parallelism))
+        .follow_links(false)
+        .skip_hidden(false)
+        .process_read_dir(move |_, _, _, dir_entry_results| {
+            dir_entry_results
+                .iter_mut()
+                .for_each(|dir_entry_result| match dir_entry_result {
+                    Ok(dir_entry) => {
+                        let source_path_buf = dir_entry.path();
+                        let source = source_path_buf.strip_prefix(&source).unwrap().to_path_buf();
+                        let destination = destination.join(&source);
+                        if dir_entry.file_type.is_dir() {
+                            sync_dir(&dir_entry, &destination, &options);
+                        } else if dir_entry.file_type.is_symlink() {
+                            sync_symlink(&dir_entry, &destination, &options);
+                        } else if dir_entry.file_type.is_file() {
+                            sync_file(&dir_entry, &destination, &options).unwrap();
+                        } else {
+                            warn!("Unknown file type: {:?}", dir_entry.file_type);
                         }
-                        dirs_total += 1;
-                    } else if dir_entry.file_type.is_symlink() {
-                        if let SyncResult::Copied = self.sync_symlink(&dir_entry, &destination)? {
-                            links_copied += 1;
-                        }
-                        links_total += 1;
-                    } else if dir_entry.file_type.is_file() {
-                        bytes_total += source_path_buf.metadata()?.len();
-                        let file_bytes_copied = self.sync_file(&dir_entry, &destination)?;
-                        bytes_copied += file_bytes_copied;
-                        if file_bytes_copied > 0 {
-                            files_copied += 1;
-                        }
-                        files_total += 1;
-                    } else {
-                        warn!("Unknown file type: {:?}", dir_entry.file_type);
                     }
-                }
-                Err(error) => {
-                    error!("Read dir_entry error: {}", error);
-                    errors += 1;
+                    Err(error) => {
+                        error!("Read dir_entry error: {}", error);
+                    }
+                })
+        });
+    let now = Instant::now();
+    let mut previous = now;
+    let mut bytes_prevoius = 0;
+    for dir_entry in walk_dir {
+        match dir_entry {
+            Ok(dir_entry) => {
+                let source_path_buf = dir_entry.path();
+                let source = source_path_buf.strip_prefix(&source).unwrap();
+                let destination = destination.join(source);
+                if dir_entry.file_type.is_dir() {
+                    dirs_total += 1;
+                } else if dir_entry.file_type.is_symlink() {
+                    links_total += 1;
+                } else if dir_entry.file_type.is_file() {
+                    bytes_total += source_path_buf.metadata()?.len();
+                    files_total += 1;
+                } else {
+                    warn!("Unknown file type: {:?}", dir_entry.file_type);
                 }
             }
-            if self.options.show_progress && previous.elapsed().as_secs() > 1 {
-                let elapsed = now.elapsed();
-                println!("\nElapsed time: {}", humantime::format_duration(elapsed));
-                println!("Directories: {}/{}", dirs_copied, dirs_total);
-                println!("Files: {}/{}", files_copied, files_total);
-                println!("Symbolic links: {}/{}", links_copied, links_total);
-                println!(
-                    "Bytes: {}/{}",
-                    humansize::format_size(bytes_copied, humansize::BINARY),
-                    humansize::format_size(bytes_total, humansize::BINARY)
-                );
-                let elapsed_as_seconds = previous.elapsed().as_secs_f32();
-                let copied_bandwidth = ((bytes_copied - bytes_prevoius) as f32 / elapsed_as_seconds) as u64;
-                println!(
-                    "Copied bandwidth: {}/s",
-                    humansize::format_size(copied_bandwidth, humansize::BINARY),
-                );
-                let synced_bandwidth = (bytes_total as f32 / elapsed_as_seconds) as u64;
-                println!(
-                    "Synced bandwidth: {}/s",
-                    humansize::format_size(synced_bandwidth, humansize::BINARY),
-                );
-                println!("Errors: {}", errors);
-                bytes_prevoius = bytes_copied;
-                previous = Instant::now();
+            Err(error) => {
+                error!("Read dir_entry error: {}", error);
+                errors += 1;
+            }
         }
-            // debug!("{}", entry?.path().display());
-        }
-        if self.options.show_stats {
+        if options.show_progress && previous.elapsed().as_secs() > 1 {
             let elapsed = now.elapsed();
-            println!("Elapsed time: {}", humantime::format_duration(elapsed));
+            println!("\nElapsed time: {}", humantime::format_duration(elapsed));
             println!("Directories: {}/{}", dirs_copied, dirs_total);
             println!("Files: {}/{}", files_copied, files_total);
             println!("Symbolic links: {}/{}", links_copied, links_total);
@@ -158,8 +127,9 @@ impl Sync {
                 humansize::format_size(bytes_copied, humansize::BINARY),
                 humansize::format_size(bytes_total, humansize::BINARY)
             );
-            let elapsed_as_seconds = elapsed.as_secs_f32();
-            let copied_bandwidth = (bytes_copied as f32 / elapsed_as_seconds) as u64;
+            let elapsed_as_seconds = previous.elapsed().as_secs_f32();
+            let copied_bandwidth =
+                ((bytes_copied - bytes_prevoius) as f32 / elapsed_as_seconds) as u64;
             println!(
                 "Copied bandwidth: {}/s",
                 humansize::format_size(copied_bandwidth, humansize::BINARY),
@@ -170,242 +140,252 @@ impl Sync {
                 humansize::format_size(synced_bandwidth, humansize::BINARY),
             );
             println!("Errors: {}", errors);
+            bytes_prevoius = bytes_copied;
+            previous = Instant::now();
         }
-        if errors > 0 {
-            return Err(Error::new(
-                std::io::ErrorKind::Other,
-                "Errors occurred during sync",
-            ));
-        }
-        Ok(0)
+        // debug!("{}", entry?.path().display());
     }
-
-    pub fn sync_dir(
-        &self,
-        dir_entry: &DirEntry<((), ())>,
-        destination: &PathBuf,
-    ) -> Result<SyncResult, Error> {
-        let mut outcome = SyncResult::Skipped;
-        if !destination.exists() {
-            if self.options.perform_dry_run {
-                debug!("Would create directory: {}", destination.display());
-            } else {
-                self.assert_parent_exists(&destination)?;
-                debug!("Creating directory: {}", destination.display());
-                std::fs::create_dir_all(&destination)?;
-            }
-            info!("Created directory: {}", destination.display());
-            outcome = SyncResult::Copied;
-        }
-        #[cfg(unix)]
-        {
-            if !self.options.perform_dry_run && self.options.preserve_permissions {
-                self.copy_permissions(&dir_entry, destination)?;
-            }
-        }
-        Ok(outcome)
+    if options.show_stats {
+        let elapsed = now.elapsed();
+        println!("Elapsed time: {}", humantime::format_duration(elapsed));
+        println!("Directories: {}/{}", dirs_copied, dirs_total);
+        println!("Files: {}/{}", files_copied, files_total);
+        println!("Symbolic links: {}/{}", links_copied, links_total);
+        println!(
+            "Bytes: {}/{}",
+            humansize::format_size(bytes_copied, humansize::BINARY),
+            humansize::format_size(bytes_total, humansize::BINARY)
+        );
+        let elapsed_as_seconds = elapsed.as_secs_f32();
+        let copied_bandwidth = (bytes_copied as f32 / elapsed_as_seconds) as u64;
+        println!(
+            "Copied bandwidth: {}/s",
+            humansize::format_size(copied_bandwidth, humansize::BINARY),
+        );
+        let synced_bandwidth = (bytes_total as f32 / elapsed_as_seconds) as u64;
+        println!(
+            "Synced bandwidth: {}/s",
+            humansize::format_size(synced_bandwidth, humansize::BINARY),
+        );
+        println!("Errors: {}", errors);
     }
+    if errors > 0 {
+        return Err(Error::new(
+            std::io::ErrorKind::Other,
+            "Errors occurred during sync",
+        ));
+    }
+    Ok(0)
+}
 
-    pub fn sync_symlink(
-        &self,
-        dir_entry: &DirEntry<((), ())>,
-        destination: &PathBuf,
-    ) -> Result<SyncResult, Error> {
-        let source = dir_entry.path();
-        let link = std::fs::read_link(&source)?;
-        let destination_metadata = destination.symlink_metadata();
-        if destination_metadata.is_ok() {
-            let destination_metadata = destination_metadata.unwrap();
-            if destination_metadata.file_type().is_symlink() {
-                let destination_link = std::fs::read_link(&destination)?;
-                if destination_link == link {
-                    return Ok(SyncResult::Skipped);
-                }
-            }
-            if self.options.perform_dry_run {
-                debug!("Would delete existing file: {}", destination.display(),);
-            } else {
-                debug!("Deleting existing file: {}", destination.display(),);
-                std::fs::remove_file(&destination)?;
-            }
-        }
-        if self.options.perform_dry_run {
-            debug!(
-                "Would create symlink: {} -> {}",
-                destination.display(),
-                link.display(),
-            );
+pub fn sync_dir(
+    dir_entry: &DirEntry<((), ())>,
+    destination: &PathBuf,
+    options: &SyncOptions,
+) -> Result<SyncResult, Error> {
+    let mut outcome = SyncResult::Skipped;
+    if !destination.exists() {
+        if options.perform_dry_run {
+            debug!("Would create directory: {}", destination.display());
         } else {
-            self.assert_parent_exists(&destination)?;
-            debug!(
-                "Creating symlink: {} -> {}",
-                destination.display(),
-                link.display(),
-            );
-            std::os::unix::fs::symlink(&link, &destination)?;
+            assert_parent_exists(&destination)?;
+            debug!("Creating directory: {}", destination.display());
+            std::fs::create_dir_all(&destination)?;
         }
-        info!(
-            "Created symlink: {} -> {}",
+        info!("Created directory: {}", destination.display());
+        outcome = SyncResult::Copied;
+    }
+    #[cfg(unix)]
+    {
+        if !options.perform_dry_run && options.preserve_permissions {
+            copy_permissions(&dir_entry, destination)?;
+        }
+    }
+    Ok(outcome)
+}
+
+pub fn sync_symlink(
+    dir_entry: &DirEntry<((), ())>,
+    destination: &PathBuf,
+    options: &SyncOptions,
+) -> Result<SyncResult, Error> {
+    let source = dir_entry.path();
+    let link = std::fs::read_link(&source)?;
+    let destination_metadata = destination.symlink_metadata();
+    if destination_metadata.is_ok() {
+        let destination_metadata = destination_metadata.unwrap();
+        if destination_metadata.file_type().is_symlink() {
+            let destination_link = std::fs::read_link(&destination)?;
+            if destination_link == link {
+                return Ok(SyncResult::Skipped);
+            }
+        }
+        if options.perform_dry_run {
+            debug!("Would delete existing file: {}", destination.display(),);
+        } else {
+            debug!("Deleting existing file: {}", destination.display(),);
+            std::fs::remove_file(&destination)?;
+        }
+    }
+    if options.perform_dry_run {
+        debug!(
+            "Would create symlink: {} -> {}",
             destination.display(),
             link.display(),
         );
-        Ok(SyncResult::Copied)
-    }
-
-    pub fn sync_file(
-        &self,
-        dir_entry: &DirEntry<((), ())>,
-        destination: &PathBuf,
-    ) -> Result<u64, Error> {
-        let source = dir_entry.path();
-        let files_differs = self.files_differs(dir_entry, destination)?;
-        let mut bytes_copied = 0;
-        if !destination.exists() || files_differs {
-            let source_length = source.metadata()?.len();
-            if self.options.perform_dry_run {
-                debug!(
-                    "Would copy file: {} -> {}",
-                    source.display(),
-                    destination.display()
-                );
-                bytes_copied = source_length;
-            } else {
-                self.assert_parent_exists(&destination)?;
-                debug!(
-                    "Copying file: {} -> {}",
-                    source.display(),
-                    destination.display()
-                );
-                bytes_copied =
-                    if source_length as usize > CHUNK_SIZE && self.options.parallelism > 1 {
-                        self.parallel_copy_file(&source, &destination)?
-                    } else {
-                        std::fs::copy(&source, &destination)?
-                    }
-            }
-        }
-        info!(
-            "Copied file: {} -> {}",
-            source.display(),
-            destination.display()
+    } else {
+        assert_parent_exists(&destination)?;
+        debug!(
+            "Creating symlink: {} -> {}",
+            destination.display(),
+            link.display(),
         );
-        #[cfg(unix)]
-        {
-            if !self.options.perform_dry_run && self.options.preserve_permissions {
-                self.copy_permissions(&dir_entry, &destination)?;
+        std::os::unix::fs::symlink(&link, &destination)?;
+    }
+    info!(
+        "Created symlink: {} -> {}",
+        destination.display(),
+        link.display(),
+    );
+    Ok(SyncResult::Copied)
+}
+
+pub fn sync_file(
+    dir_entry: &DirEntry<((), ())>,
+    destination: &PathBuf,
+    options: &SyncOptions,
+) -> Result<u64, Error> {
+    let source = dir_entry.path();
+    let files_differs = files_differs(dir_entry, destination)?;
+    let mut bytes_copied = 0;
+    if !destination.exists() || files_differs {
+        let source_length = source.metadata()?.len();
+        if options.perform_dry_run {
+            debug!(
+                "Would copy file: {} -> {}",
+                source.display(),
+                destination.display()
+            );
+            bytes_copied = source_length;
+        } else {
+            assert_parent_exists(&destination)?;
+            debug!(
+                "Copying file: {} -> {}",
+                source.display(),
+                destination.display()
+            );
+            bytes_copied = if source_length as usize > CHUNK_SIZE && options.parallelism > 1 {
+                parallel_copy_file(&source, &destination)?
+            } else {
+                std::fs::copy(&source, &destination)?
             }
         }
-        Ok(bytes_copied)
     }
-
-    pub fn assert_parent_exists(&self, path: &PathBuf) -> Result<(), Error> {
-        let path_parent = path.parent().unwrap();
-        if !path_parent.exists() {
-            error!("Parent directory does not exist: {}", path_parent.display());
-            Err(Error::new(
-                std::io::ErrorKind::NotFound,
-                "Parent directory does not exist",
-            ))?;
+    info!(
+        "Copied file: {} -> {}",
+        source.display(),
+        destination.display()
+    );
+    #[cfg(unix)]
+    {
+        if !options.perform_dry_run && options.preserve_permissions {
+            copy_permissions(&dir_entry, &destination)?;
         }
-        Ok(())
     }
+    Ok(bytes_copied)
+}
 
-    pub fn parallel_copy_file(
-        &self,
-        source: &PathBuf,
-        destination: &PathBuf,
-    ) -> Result<u64, Error> {
-        let source_file = File::open(&source)?;
-        let file_len = source_file.metadata()?.len();
-        let destination_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&destination)?;
-        destination_file.set_len(file_len)?;
-        let source = unsafe { memmap::Mmap::map(&source_file)? };
-        let mut dest = unsafe { memmap::MmapMut::map_mut(&destination_file)? };
-
-        dest.par_chunks_mut(CHUNK_SIZE)
-            .zip(source.par_chunks(CHUNK_SIZE))
-            .for_each(|(dest_chunk, source_chunk)| dest_chunk.copy_from_slice(source_chunk));
-
-        Ok(file_len)
+pub fn assert_parent_exists(path: &PathBuf) -> Result<(), Error> {
+    let path_parent = path.parent().unwrap();
+    if !path_parent.exists() {
+        error!("Parent directory does not exist: {}", path_parent.display());
+        Err(Error::new(
+            std::io::ErrorKind::NotFound,
+            "Parent directory does not exist",
+        ))?;
     }
+    Ok(())
+}
 
-    pub fn parallel_copy_file2(
-        &self,
-        source: &PathBuf,
-        destination: &PathBuf,
-    ) -> Result<u64, Error> {
-        let source_file = File::open(&source)?;
-        let destination_file = File::create(&destination)?;
-        let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);
-        let mut writer = BufWriter::with_capacity(BUFFER_SIZE, destination_file);
+pub fn parallel_copy_file(source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+    let source_file = File::open(&source)?;
+    let file_len = source_file.metadata()?.len();
+    let destination_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&destination)?;
+    destination_file.set_len(file_len)?;
+    let source = unsafe { memmap::Mmap::map(&source_file)? };
+    let mut dest = unsafe { memmap::MmapMut::map_mut(&destination_file)? };
 
-        let mut buffer = vec![0; CHUNK_SIZE];
-        let mut total_bytes_copied = 0;
-        let file_len = source.metadata()?.len();
+    dest.par_chunks_mut(CHUNK_SIZE)
+        .zip(source.par_chunks(CHUNK_SIZE))
+        .for_each(|(dest_chunk, source_chunk)| dest_chunk.copy_from_slice(source_chunk));
 
-        loop {
-            let bytes_read = reader.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
+    Ok(file_len)
+}
 
-            let chunks: Vec<_> = buffer[..bytes_read]
-                .par_chunks(CHUNK_SIZE)
-                .with_min_len(self.options.parallelism)
-                .map(|chunk| chunk.to_vec())
-                .collect();
+pub fn parallel_copy_file2(source: &PathBuf, destination: &PathBuf, options: &SyncOptions) -> Result<u64, Error> {
+    let source_file = File::open(&source)?;
+    let destination_file = File::create(&destination)?;
+    let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);
+    let mut writer = BufWriter::with_capacity(BUFFER_SIZE, destination_file);
 
-            for chunk in chunks {
-                writer.write_all(&chunk)?;
-                let bytes_copied = chunk.len() as u64;
-                total_bytes_copied += bytes_copied;
-                debug!(
-                    "Copied chunk {}/{} from {} to {}",
-                    humansize::format_size(total_bytes_copied, humansize::BINARY),
-                    humansize::format_size(file_len, humansize::BINARY),
-                    source.display(),
-                    destination.display()
-                );
-            }
+    let mut buffer = vec![0; CHUNK_SIZE];
+    let mut total_bytes_copied = 0;
+    let file_len = source.metadata()?.len();
+
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
         }
 
-        writer.flush()?;
-        Ok(total_bytes_copied)
-    }
+        let chunks: Vec<_> = buffer[..bytes_read]
+            .par_chunks(CHUNK_SIZE)
+            .with_min_len(options.parallelism)
+            .map(|chunk| chunk.to_vec())
+            .collect();
 
-    pub fn copy_permissions(
-        &self,
-        entry: &DirEntry<((), ())>,
-        destination: &PathBuf,
-    ) -> Result<(), Error> {
-        let metadata = entry.metadata()?;
-        let permissions = metadata.permissions();
-        std::fs::set_permissions(&destination, permissions)?;
-        Ok(())
-    }
-
-    pub fn files_differs(
-        &self,
-        dir_entry: &DirEntry<((), ())>,
-        destination: &PathBuf,
-    ) -> Result<bool, Error> {
-        if !destination.exists() {
-            return Ok(true);
+        for chunk in chunks {
+            writer.write_all(&chunk)?;
+            let bytes_copied = chunk.len() as u64;
+            total_bytes_copied += bytes_copied;
+            debug!(
+                "Copied chunk {}/{} from {} to {}",
+                humansize::format_size(total_bytes_copied, humansize::BINARY),
+                humansize::format_size(file_len, humansize::BINARY),
+                source.display(),
+                destination.display()
+            );
         }
-
-        let src_meta = dir_entry.metadata()?;
-        let dest_meta = destination.metadata()?;
-
-        let src_mtime = FileTime::from_last_modification_time(&src_meta);
-        let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
-
-        let src_size = src_meta.len();
-        let dest_size = dest_meta.len();
-
-        Ok(src_mtime > dest_mtime || src_size != dest_size)
     }
+
+    writer.flush()?;
+    Ok(total_bytes_copied)
+}
+
+pub fn copy_permissions(entry: &DirEntry<((), ())>, destination: &PathBuf) -> Result<(), Error> {
+    let metadata = entry.metadata()?;
+    let permissions = metadata.permissions();
+    std::fs::set_permissions(&destination, permissions)?;
+    Ok(())
+}
+
+pub fn files_differs(dir_entry: &DirEntry<((), ())>, destination: &PathBuf) -> Result<bool, Error> {
+    if !destination.exists() {
+        return Ok(true);
+    }
+
+    let src_meta = dir_entry.metadata()?;
+    let dest_meta = destination.metadata()?;
+
+    let src_mtime = FileTime::from_last_modification_time(&src_meta);
+    let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
+
+    let src_size = src_meta.len();
+    let dest_size = dest_meta.len();
+
+    Ok(src_mtime > dest_mtime || src_size != dest_size)
 }

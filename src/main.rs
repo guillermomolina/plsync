@@ -94,8 +94,7 @@ fn main() {
         show_stats: arguments.show_stats,
     };
 
-    let syncer = Sync::new(source, destination, options);
-    let stats = syncer.sync();
+    let stats = sync(source, destination, options);
     match stats {
         Err(err) => {
             eprintln!("{}", err);
