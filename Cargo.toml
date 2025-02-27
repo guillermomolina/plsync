@@ -1,0 +1,27 @@
+[package]
+name = "plsync"
+version = "0.0.1"
+authors = [
+    "Guillermo Adrián Molina <guillermoadrianmolina@hotmail.com>",
+]
+
+readme = "README.md"
+description = "Parallel local only `rsync` implementation in Rust"
+license = "BSD-3-Clause"
+
+keywords = ["rsync"]
+categories = ["command-line-utilities"]
+
+repository = "https://github.com/guillermomolina/plsync"
+
+edition = "2021"
+
+[dependencies]
+jwalk = "0.8.1"
+clap = { version = "4.4.13", features = ["derive"] }
+log = "0.4.14"
+env_logger = "0.9"
+filetime = "0.2.25"
+
+[dev-dependencies]
+tempfile = "3.3.0"
