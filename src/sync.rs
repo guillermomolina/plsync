@@ -1,3 +1,4 @@
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -6,6 +7,7 @@ use filetime::FileTime;
 use jwalk::rayon::iter::IndexedParallelIterator;
 use jwalk::rayon::iter::ParallelIterator;
 use jwalk::rayon::slice::ParallelSlice;
+use jwalk::rayon::slice::ParallelSliceMut;
 use jwalk::DirEntry;
 use jwalk::Parallelism;
 use jwalk::WalkDir;
@@ -82,6 +84,8 @@ impl Sync {
             .follow_links(false)
             .skip_hidden(false);
         let now = Instant::now();
+        let mut previous = now;
+        let mut bytes_prevoius = 0;
         for dir_entry in walk_dir {
             match dir_entry {
                 Ok(dir_entry) => {
@@ -115,6 +119,32 @@ impl Sync {
                     errors += 1;
                 }
             }
+            if self.options.show_progress && previous.elapsed().as_secs() > 1 {
+                let elapsed = now.elapsed();
+                println!("\nElapsed time: {}", humantime::format_duration(elapsed));
+                println!("Directories: {}/{}", dirs_copied, dirs_total);
+                println!("Files: {}/{}", files_copied, files_total);
+                println!("Symbolic links: {}/{}", links_copied, links_total);
+                println!(
+                    "Bytes: {}/{}",
+                    humansize::format_size(bytes_copied, humansize::BINARY),
+                    humansize::format_size(bytes_total, humansize::BINARY)
+                );
+                let elapsed_as_seconds = previous.elapsed().as_secs_f32();
+                let copied_bandwidth = ((bytes_copied - bytes_prevoius) as f32 / elapsed_as_seconds) as u64;
+                println!(
+                    "Copied bandwidth: {}/s",
+                    humansize::format_size(copied_bandwidth, humansize::BINARY),
+                );
+                let synced_bandwidth = (bytes_total as f32 / elapsed_as_seconds) as u64;
+                println!(
+                    "Synced bandwidth: {}/s",
+                    humansize::format_size(synced_bandwidth, humansize::BINARY),
+                );
+                println!("Errors: {}", errors);
+                bytes_prevoius = bytes_copied;
+                previous = Instant::now();
+        }
             // debug!("{}", entry?.path().display());
         }
         if self.options.show_stats {
@@ -281,6 +311,29 @@ impl Sync {
     }
 
     pub fn parallel_copy_file(
+        &self,
+        source: &PathBuf,
+        destination: &PathBuf,
+    ) -> Result<u64, Error> {
+        let source_file = File::open(&source)?;
+        let file_len = source_file.metadata()?.len();
+        let destination_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&destination)?;
+        destination_file.set_len(file_len)?;
+        let source = unsafe { memmap::Mmap::map(&source_file)? };
+        let mut dest = unsafe { memmap::MmapMut::map_mut(&destination_file)? };
+
+        dest.par_chunks_mut(CHUNK_SIZE)
+            .zip(source.par_chunks(CHUNK_SIZE))
+            .for_each(|(dest_chunk, source_chunk)| dest_chunk.copy_from_slice(source_chunk));
+
+        Ok(file_len)
+    }
+
+    pub fn parallel_copy_file2(
         &self,
         source: &PathBuf,
         destination: &PathBuf,

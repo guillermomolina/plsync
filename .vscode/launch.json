@@ -20,13 +20,13 @@
                 }
             },
             "args": [
-                // "-n",
+                "-n",
                 "--progress",
                 "--stats",
                 "--parallelism=8",
-                "--log-level=info",
-                "/user/Temporal/a/",
-                "/user/Temporal2/a/"
+                // "--log-level=info",
+                "/user/",
+                "/user/Temporal2/"
             ],
             "cwd": "${workspaceFolder}"
         },
