@@ -1,13 +1,19 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use filetime::FileTime;
+use jwalk::rayon::iter::ParallelIterator;
+use jwalk::rayon::slice::ParallelSlice;
 use jwalk::DirEntry;
 use jwalk::Parallelism;
 use jwalk::WalkDir;
-use log::debug;
-use log::warn;
-use filetime::FileTime;
+use log::{debug, error, warn};
+use std::fs::File;
 use std::io::Error;
+use std::io::{BufReader, BufWriter, Read, Write};
+
+const BUFFER_SIZE: usize = 32 * 1024;
+const CHUNK_SIZE: usize = BUFFER_SIZE * 1024;
 
 #[derive(Copy, Clone)]
 pub struct SyncOptions {
@@ -57,6 +63,9 @@ impl Sync {
         let mut dirs = 0;
         let mut files = 0;
         let mut symlinks = 0;
+        let mut errors = 0;
+        let mut bytes_copied = 0;
+        let mut bytes_total = 0;
         let walk_dir = WalkDir::new(self.source.clone())
             .parallelism(self.parallelism())
             .follow_links(false)
@@ -70,12 +79,13 @@ impl Sync {
                     if dir_entry.file_type.is_dir() {
                         self.sync_dir(&destination)?;
                         dirs += 1;
-                    } else if dir_entry.file_type.is_file() {
-                        self.sync_file(&dir_entry, &destination)?;
-                        files += 1;
                     } else if dir_entry.file_type.is_symlink() {
                         self.sync_symlink(&dir_entry, &destination)?;
                         symlinks += 1
+                    } else if dir_entry.file_type.is_file() {
+                        bytes_total += source_path_buf.metadata()?.len();
+                        bytes_copied += self.sync_file(&dir_entry, &destination)?;
+                        files += 1;
                     } else {
                         warn!("Unknown file type: {:?}", dir_entry.file_type);
                     }
@@ -87,7 +97,8 @@ impl Sync {
                     }
                 }
                 Err(error) => {
-                    println!("Read dir_entry error: {}", error);
+                    error!("Read dir_entry error: {}", error);
+                    errors += 1;
                 }
             }
             // debug!("{}", entry?.path().display());
@@ -95,6 +106,21 @@ impl Sync {
         println!("Directories: {}", dirs);
         println!("Files: {}", files);
         println!("Symbolic links: {}", symlinks);
+        println!("Errors: {}", errors);
+        println!(
+            "Bytes copied: {}",
+            humansize::format_size(bytes_copied, humansize::DECIMAL)
+        );
+        println!(
+            "Bytes total: {}",
+            humansize::format_size(bytes_total, humansize::DECIMAL)
+        );
+        if errors > 0 {
+            return Err(Error::new(
+                std::io::ErrorKind::Other,
+                "Errors occurred during sync",
+            ));
+        }
         Ok(0)
     }
 
@@ -144,9 +170,10 @@ impl Sync {
         &self,
         dir_entry: &DirEntry<((), ())>,
         destination: &PathBuf,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let source = dir_entry.path();
         let files_differs = self.files_differs(dir_entry, destination)?;
+        let mut bytes_copied = 0;
         if !destination.exists() || files_differs {
             if self.options.perform_dry_run {
                 debug!(
@@ -160,10 +187,56 @@ impl Sync {
                     source.display(),
                     destination.display()
                 );
-                std::fs::copy(&source, &destination)?;
+                let source_size = source.metadata()?.len() as usize;
+                bytes_copied = if source_size > CHUNK_SIZE {
+                    self.parallel_copy_file(&source, &destination)?
+                } else {
+                    std::fs::copy(&source, &destination)?
+                }
             }
         }
-        Ok(())
+        Ok(bytes_copied)
+    }
+
+    pub fn parallel_copy_file(
+        &self,
+        source: &PathBuf,
+        destination: &PathBuf,
+    ) -> Result<u64, Error> {
+        let source_file = File::open(&source)?;
+        let destination_file = File::create(&destination)?;
+        let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);
+        let mut writer = BufWriter::with_capacity(BUFFER_SIZE, destination_file);
+
+        let mut buffer = vec![0; BUFFER_SIZE];
+        let mut total_bytes_copied = 0;
+
+        loop {
+            let bytes_read = reader.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            let chunks: Vec<_> = buffer[..bytes_read]
+                .par_chunks(CHUNK_SIZE)
+                .map(|chunk| chunk.to_vec())
+                .collect();
+
+            for (id, chunk) in chunks.into_iter().enumerate() {
+                debug!(
+                    "Copying file: {} -> {}, chunk {}",
+                    source.display(),
+                    destination.display(),
+                    id,
+                );
+                writer.write_all(&chunk)?;
+            }
+
+            total_bytes_copied += bytes_read as u64;
+        }
+
+        writer.flush()?;
+        Ok(total_bytes_copied)
     }
 
     pub fn copy_permissions(
@@ -177,11 +250,15 @@ impl Sync {
         Ok(())
     }
 
-    pub fn files_differs(&self, dir_entry: &DirEntry<((), ())>, destination: &PathBuf) -> Result<bool, Error> {
+    pub fn files_differs(
+        &self,
+        dir_entry: &DirEntry<((), ())>,
+        destination: &PathBuf,
+    ) -> Result<bool, Error> {
         if !destination.exists() {
             return Ok(true);
         }
-        
+
         let src_meta = dir_entry.metadata()?;
         let dest_meta = destination.metadata()?;
 

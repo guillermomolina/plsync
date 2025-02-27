@@ -24,7 +24,7 @@
                 "--progress",
                 "--stats",
                 "--parallelism=4",
-                "--log-level=info",
+                "--log-level=debug",
                 "/user/Temporal",
                 "/user/Temporal2"
             ],
