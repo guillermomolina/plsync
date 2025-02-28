@@ -110,19 +110,8 @@ pub fn sync(source: &Path, destination: &Path, options: SyncOptions) -> Result<u
     let mut previous_bytes_copied = 0;
     for dir_entry in walk_dir {
         match dir_entry {
-            Ok(_dir_entry) => {
-                /*let source_path_buf = dir_entry.path();
-                if dir_entry.file_type.is_dir() {
-                    sync_status.lock().unwrap().dirs_total += 1;
-                } else if dir_entry.file_type.is_symlink() {
-                    sync_status.lock().unwrap().links_total += 1;
-                } else if dir_entry.file_type.is_file() {
-                    let mut status = sync_status.lock().unwrap();
-                    status.bytes_total += source_path_buf.metadata()?.len();
-                    status.files_total += 1;
-                } else {
-                    warn!("Unknown file type: {:?}", dir_entry.file_type);
-                }*/
+            Ok(dir_entry) => {
+                debug!("{}", dir_entry.path().display());
             }
             Err(error) => {
                 sync_status.lock().unwrap().errors += 1;
@@ -215,21 +204,27 @@ fn process_read_dir(
                     {
                         sync_status.lock().unwrap().dirs_copied += 1;
                     }
+                    sync_status.lock().unwrap().dirs_total += 1;
                 } else if dir_entry.file_type.is_symlink() {
                     if let SyncResult::Copied =
                         sync_symlink(&dir_entry, &destination, &options).unwrap()
                     {
                         sync_status.lock().unwrap().links_copied += 1;
                     }
+                    sync_status.lock().unwrap().links_total += 1;
                 } else if dir_entry.file_type.is_file() {
-                    sync_status.lock().unwrap().bytes_total +=
-                        source_path_buf.metadata().unwrap().len();
-                    let file_bytes_copied = sync_file(&dir_entry, &destination, &options).unwrap();
-                    sync_status.lock().unwrap().bytes_copied += file_bytes_copied;
-                    if file_bytes_copied > 0 {
-                        sync_status.lock().unwrap().files_copied += 1;
+                    if source_path_buf.metadata().is_ok() { 
+                        sync_status.lock().unwrap().bytes_total +=
+                            source_path_buf.metadata().unwrap().len();
+                        let file_bytes_copied = sync_file(&dir_entry, &destination, &options).unwrap();
+                        sync_status.lock().unwrap().bytes_copied += file_bytes_copied;
+                        if file_bytes_copied > 0 {
+                            sync_status.lock().unwrap().files_copied += 1;
+                        }
+                        sync_status.lock().unwrap().files_total += 1; 
+                    } else {
+                        warn!("Could not read metadata for file: {:?}", source_path_buf);
                     }
-                    sync_status.lock().unwrap().files_total += 1;
                 } else {
                     warn!("Unknown file type: {:?}", dir_entry.file_type);
                 }
@@ -250,7 +245,7 @@ pub fn sync_dir(
         if options.perform_dry_run {
             debug!("Would create directory: {}", destination.display());
         } else {
-            assert_parent_exists(&destination)?;
+            // assert_parent_exists(&destination)?;
             debug!("Creating directory: {}", destination.display());
             std::fs::create_dir_all(&destination)?;
         }
@@ -296,7 +291,7 @@ pub fn sync_symlink(
             link.display(),
         );
     } else {
-        assert_parent_exists(&destination)?;
+        ensure_parent_exists(&destination)?;
         debug!(
             "Creating symlink: {} -> {}",
             destination.display(),
@@ -330,7 +325,7 @@ pub fn sync_file(
             );
             bytes_copied = source_length;
         } else {
-            assert_parent_exists(&destination)?;
+            ensure_parent_exists(&destination)?;
             debug!(
                 "Copying file: {} -> {}",
                 source.display(),
@@ -365,6 +360,15 @@ pub fn assert_parent_exists(path: &PathBuf) -> Result<(), Error> {
             std::io::ErrorKind::NotFound,
             "Parent directory does not exist",
         ))?;
+    }
+    Ok(())
+}
+
+pub fn ensure_parent_exists(path: &PathBuf) -> Result<(), Error> {
+    let path_parent = path.parent().unwrap();
+    if !path_parent.exists() {
+        debug!("Creating parent directory: {}", path_parent.display());
+        std::fs::create_dir_all(&path_parent)?;
     }
     Ok(())
 }

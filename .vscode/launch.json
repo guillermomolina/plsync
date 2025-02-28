@@ -24,9 +24,9 @@
                 "--progress",
                 "--stats",
                 "--parallelism=8",
-                "--log-level=debug",
-                "/user/Temporal/",
-                "/user/Temporal2/"
+                // "--log-level=debug",
+                "/user/Red/Multimedia/",
+                "/user/Backup/backup/casa/Multimedia/"
             ],
             "cwd": "${workspaceFolder}"
         },
