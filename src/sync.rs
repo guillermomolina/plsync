@@ -199,27 +199,46 @@ fn process_read_dir(
                     .to_path_buf();
                 let destination = sync_status.lock().unwrap().destination.join(&source);
                 if dir_entry.file_type.is_dir() {
-                    if let SyncResult::Copied =
-                        sync_dir(&dir_entry, &destination, &options).unwrap()
-                    {
-                        sync_status.lock().unwrap().dirs_copied += 1;
+                    match sync_dir(&dir_entry, &destination, &options) {
+                        Ok(SyncResult::Copied) => {
+                            sync_status.lock().unwrap().dirs_copied += 1;
+                        }
+                        Ok(SyncResult::Skipped) => {
+                        }
+                        Err(error) => {
+                            sync_status.lock().unwrap().errors += 1;
+                            error!("Sync dir error: {}", error);
+                        }
                     }
                     sync_status.lock().unwrap().dirs_total += 1;
                 } else if dir_entry.file_type.is_symlink() {
-                    if let SyncResult::Copied =
-                        sync_symlink(&dir_entry, &destination, &options).unwrap()
-                    {
-                        sync_status.lock().unwrap().links_copied += 1;
-                    }
+                    match sync_symlink(&dir_entry, &destination, &options) {
+                        Ok(SyncResult::Copied) => {
+                            sync_status.lock().unwrap().links_copied += 1;
+                        }
+                        Ok(SyncResult::Skipped) => {
+                        }
+                        Err(error) => {
+                            sync_status.lock().unwrap().errors += 1;
+                            error!("Sync symlink error: {}", error);
+                        }
+                    }   
                     sync_status.lock().unwrap().links_total += 1;
                 } else if dir_entry.file_type.is_file() {
                     if source_path_buf.metadata().is_ok() { 
                         sync_status.lock().unwrap().bytes_total +=
                             source_path_buf.metadata().unwrap().len();
-                        let file_bytes_copied = sync_file(&dir_entry, &destination, &options).unwrap();
-                        sync_status.lock().unwrap().bytes_copied += file_bytes_copied;
-                        if file_bytes_copied > 0 {
-                            sync_status.lock().unwrap().files_copied += 1;
+                        match sync_file(&dir_entry, &destination, &options) {
+                            Ok(bytes_copied) => {
+                                sync_status.lock().unwrap().bytes_copied += bytes_copied;
+                                if bytes_copied > 0 {
+                                    sync_status.lock().unwrap().files_copied += 1;
+                                }
+                            }
+                            Err(error) => {
+                                sync_status.lock().unwrap().errors += 1;
+                                error!("Sync file error: {}", error);
+                            }
                         }
                         sync_status.lock().unwrap().files_total += 1; 
                     } else {
@@ -343,12 +362,6 @@ pub fn sync_file(
         source.display(),
         destination.display()
     );
-    #[cfg(unix)]
-    {
-        if !options.perform_dry_run && options.preserve_permissions {
-            copy_permissions(&dir_entry, &destination)?;
-        }
-    }
     Ok(bytes_copied)
 }
 
@@ -408,7 +421,8 @@ pub fn parallel_copy_file(
 
     let mut buffer = vec![0; CHUNK_SIZE];
     let mut total_bytes_copied = 0;
-    let file_len = source.metadata()?.len();
+    let source_metadata = source.metadata()?;
+    let file_len = source_metadata.len();
 
     loop {
         let bytes_read = reader.read(&mut buffer)?;
@@ -435,8 +449,14 @@ pub fn parallel_copy_file(
             );
         }
     }
-
     writer.flush()?;
+    #[cfg(unix)]
+    {
+        if options.preserve_permissions {
+            let permissions = source_metadata.permissions();
+            std::fs::set_permissions(&destination, permissions)?;
+        }
+    }
     Ok(total_bytes_copied)
 }
 
