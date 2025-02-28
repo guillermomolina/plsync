@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use filetime::FileTime;
@@ -11,7 +11,7 @@ use jwalk::rayon::slice::ParallelSlice;
 use jwalk::rayon::slice::ParallelSliceMut;
 use jwalk::DirEntry;
 use jwalk::Parallelism;
-use jwalk::WalkDir;
+use jwalk::WalkDirGeneric;
 use log::info;
 use log::{debug, error, warn};
 use std::fs::File;
@@ -55,10 +55,8 @@ pub fn parallelism(parallelism: usize) -> Parallelism {
     }
 }
 
-struct SyncStatus {
-    pub source: PathBuf,
-    pub destination: PathBuf,
-    pub options: SyncOptions,
+#[derive(Debug, Default)]
+pub struct SyncStatus {
     pub dirs_copied: u64,
     pub dirs_total: u64,
     pub files_copied: u64,
@@ -71,11 +69,8 @@ struct SyncStatus {
 }
 
 impl SyncStatus {
-    fn new(source: PathBuf, destination: PathBuf, options: SyncOptions) -> Self {
+    fn new() -> Self {
         Self {
-            source,
-            destination,
-            options,
             dirs_copied: 0,
             dirs_total: 0,
             files_copied: 0,
@@ -90,31 +85,28 @@ impl SyncStatus {
 }
 
 pub fn sync(source: &Path, destination: &Path, options: SyncOptions) -> Result<u64, Error> {
-    let sync_status = Arc::new(Mutex::new(SyncStatus::new(
-        source.to_path_buf(),
-        destination.to_path_buf(),
-        options,
-    )));
-    let walk_dir = WalkDir::new(source)
+    let walk_dir = WalkDirGeneric::<((), SyncStatus)>::new(source)
         .parallelism(parallelism(options.parallelism))
         .follow_links(false)
         .skip_hidden(false)
         .process_read_dir({
-            let sync_status = Arc::clone(&sync_status);
+            let source_base = Arc::new(source.to_path_buf());
+            let destination_base = Arc::new(destination.to_path_buf());
+            let options = Arc::new(options);
             move |_, _, _, dir_entry_results| {
-                process_read_dir(sync_status.clone(), dir_entry_results);
+                process_read_dir(source_base.clone(), destination_base.clone(), options.clone(), dir_entry_results);
             }
         });
     let start_time = Instant::now();
     let mut previous_time = start_time;
     let mut previous_bytes_copied = 0;
+    let sync_status = SyncStatus::new();
     for dir_entry in walk_dir {
         match dir_entry {
             Ok(dir_entry) => {
                 debug!("Found directory entry {}", dir_entry.path().display());
             }
             Err(error) => {
-                sync_status.lock().unwrap().errors += 1;
                 error!("Walk dir_entry error: {}", error);
             }
         }
@@ -125,99 +117,99 @@ pub fn sync(source: &Path, destination: &Path, options: SyncOptions) -> Result<u
                 previous_time,
                 previous_bytes_copied,
             );
-            previous_bytes_copied = sync_status.lock().unwrap().bytes_copied;
+            previous_bytes_copied = sync_status.bytes_copied;
             previous_time = Instant::now();
         }
         // debug!("{}", entry?.path().display());
     }
     if options.show_stats {
-        print_progress(&sync_status, start_time, start_time, 0);
+        print_progress( &sync_status,start_time, start_time, 0);
     }
-    if sync_status.lock().unwrap().errors > 0 {
-        return Err(Error::new(
-            std::io::ErrorKind::Other,
-            "Errors occurred during sync",
-        ));
-    }
+    // if dir_entry.client_state.errors > 0 {
+    //     return Err(Error::new(
+    //         std::io::ErrorKind::Other,
+    //         "Errors occurred during sync",
+    //     ));
+    // }
     Ok(0)
 }
 
 fn print_progress(
-    sync_status: &Arc<Mutex<SyncStatus>>,
+    sync_status: &SyncStatus,
     start_time: Instant,
     previous_time: Instant,
     previous_bytes_copied: u64,
 ) {
     let elapsed = start_time.elapsed();
-    let synck_status_lckd = sync_status.lock().unwrap();
     println!("\nElapsed time: {}", humantime::format_duration(elapsed));
     println!(
         "Directories: {}/{}",
-        synck_status_lckd.dirs_copied, synck_status_lckd.dirs_total
+        sync_status.dirs_copied, sync_status.dirs_total
     );
     println!(
         "Files: {}/{}",
-        synck_status_lckd.files_copied, synck_status_lckd.files_total
+        sync_status.files_copied, sync_status.files_total
     );
     println!(
         "Symbolic links: {}/{}",
-        synck_status_lckd.links_copied, synck_status_lckd.links_total
+        sync_status.links_copied, sync_status.links_total
     );
     println!(
         "Bytes: {}/{}",
-        humansize::format_size(synck_status_lckd.bytes_copied, humansize::BINARY),
-        humansize::format_size(synck_status_lckd.bytes_total, humansize::BINARY)
+        humansize::format_size(sync_status.bytes_copied, humansize::BINARY),
+        humansize::format_size(sync_status.bytes_total, humansize::BINARY)
     );
     let elapsed_as_seconds = previous_time.elapsed().as_secs_f32();
-    let copied_bandwidth = ((synck_status_lckd.bytes_copied - previous_bytes_copied) as f32
+    let copied_bandwidth = ((sync_status.bytes_copied - previous_bytes_copied) as f32
         / elapsed_as_seconds) as u64;
     println!(
         "Copied bandwidth: {}/s",
         humansize::format_size(copied_bandwidth, humansize::BINARY),
     );
-    let synced_bandwidth = (synck_status_lckd.bytes_total as f32 / elapsed_as_seconds) as u64;
+    let synced_bandwidth = (sync_status.bytes_total as f32 / elapsed_as_seconds) as u64;
     println!(
         "Synced bandwidth: {}/s",
         humansize::format_size(synced_bandwidth, humansize::BINARY),
     );
-    println!("Errors: {}", synck_status_lckd.errors);
+    println!("Errors: {}", sync_status.errors);
 }
 
 fn process_read_dir(
-    sync_status: Arc<Mutex<SyncStatus>>,
-    dir_entry_results: &mut Vec<Result<DirEntry<((), ())>, jwalk::Error>>,
+    source_base: Arc<PathBuf>,
+    destination_base: Arc<PathBuf>,
+    options: Arc<SyncOptions>,
+    dir_entry_results: &mut Vec<Result<DirEntry<((), SyncStatus)>, jwalk::Error>>,
 ) {
     dir_entry_results
         .iter_mut()
         .for_each(|dir_entry_result| match dir_entry_result {
             Ok(dir_entry) => {
-                let options = sync_status.lock().unwrap().options;
                 let source_path_buf = dir_entry.path();
                 let source = source_path_buf
-                    .strip_prefix(&sync_status.lock().unwrap().source)
+                    .strip_prefix(&*source_base)
                     .unwrap()
                     .to_path_buf();
-                let destination = sync_status.lock().unwrap().destination.join(&source);
+                let destination = destination_base.join(&source);
                 if dir_entry.file_type.is_dir() {
                     match sync_dir(&dir_entry, &destination, &options) {
                         Ok(SyncResult::Copied) => {
-                            sync_status.lock().unwrap().dirs_copied += 1;
+                            dir_entry.client_state.dirs_copied += 1;
                         }
                         Ok(SyncResult::Skipped) => {}
                         Err(error) => {
-                            sync_status.lock().unwrap().errors += 1;
+                            dir_entry.client_state.errors += 1;
                             error!("Sync dir: '{}', error: '{}'", destination.display(), error);
                         }
                     }
-                    sync_status.lock().unwrap().dirs_total += 1;
+                    dir_entry.client_state.dirs_total += 1;
                 } else if dir_entry.file_type.is_symlink() {
                     match sync_symlink(&dir_entry, &destination, &options) {
                         Ok(SyncResult::Copied) => {
-                            sync_status.lock().unwrap().links_copied += 1;
+                            dir_entry.client_state.links_copied += 1;
                         }
                         Ok(SyncResult::Skipped) => {}
                         Err(error) => {
-                            sync_status.lock().unwrap().errors += 1;
+                            dir_entry.client_state.errors += 1;
                             error!(
                                 "Sync symlink: '{}', error: '{}'",
                                 destination.display(),
@@ -225,20 +217,20 @@ fn process_read_dir(
                             );
                         }
                     }
-                    sync_status.lock().unwrap().links_total += 1;
+                    dir_entry.client_state.links_total += 1;
                 } else if dir_entry.file_type.is_file() {
                     if source_path_buf.metadata().is_ok() {
-                        sync_status.lock().unwrap().bytes_total +=
+                        dir_entry.client_state.bytes_total +=
                             source_path_buf.metadata().unwrap().len();
                         match sync_file(&dir_entry, &destination, &options) {
                             Ok(bytes_copied) => {
-                                sync_status.lock().unwrap().bytes_copied += bytes_copied;
+                                dir_entry.client_state.bytes_copied += bytes_copied;
                                 if bytes_copied > 0 {
-                                    sync_status.lock().unwrap().files_copied += 1;
+                                    dir_entry.client_state.files_copied += 1;
                                 }
                             }
                             Err(error) => {
-                                sync_status.lock().unwrap().errors += 1;
+                                dir_entry.client_state.errors += 1;
                                 error!(
                                     "Sync file: '{}', error: '{}'",
                                     destination.display(),
@@ -246,7 +238,7 @@ fn process_read_dir(
                                 );
                             }
                         }
-                        sync_status.lock().unwrap().files_total += 1;
+                        dir_entry.client_state.files_total += 1;
                     } else {
                         warn!("Could not read metadata for file: {:?}", source_path_buf);
                     }
@@ -261,7 +253,7 @@ fn process_read_dir(
 }
 
 pub fn sync_dir(
-    dir_entry: &DirEntry<((), ())>,
+    dir_entry: &DirEntry<((), SyncStatus)>,
     destination: &PathBuf,
     options: &SyncOptions,
 ) -> Result<SyncResult, Error> {
@@ -287,7 +279,7 @@ pub fn sync_dir(
 }
 
 pub fn sync_symlink(
-    dir_entry: &DirEntry<((), ())>,
+    dir_entry: &DirEntry<((), SyncStatus)>,
     destination: &PathBuf,
     options: &SyncOptions,
 ) -> Result<SyncResult, Error> {
@@ -333,7 +325,7 @@ pub fn sync_symlink(
 }
 
 pub fn sync_file(
-    dir_entry: &DirEntry<((), ())>,
+    dir_entry: &DirEntry<((), SyncStatus)>,
     destination: &PathBuf,
     options: &SyncOptions,
 ) -> Result<u64, Error> {
@@ -472,14 +464,14 @@ pub fn parallel_copy_file(
     Ok(total_bytes_copied)
 }
 
-pub fn copy_permissions(entry: &DirEntry<((), ())>, destination: &PathBuf) -> Result<(), Error> {
+pub fn copy_permissions(entry: &DirEntry<((), SyncStatus)>, destination: &PathBuf) -> Result<(), Error> {
     let metadata = entry.metadata()?;
     let permissions = metadata.permissions();
     std::fs::set_permissions(&destination, permissions)?;
     Ok(())
 }
 
-pub fn files_differs(dir_entry: &DirEntry<((), ())>, destination: &PathBuf) -> Result<bool, Error> {
+pub fn files_differs(dir_entry: &DirEntry<((), SyncStatus)>, destination: &PathBuf) -> Result<bool, Error> {
     if !destination.exists() {
         return Ok(true);
     }
