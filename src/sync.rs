@@ -21,11 +21,6 @@ use std::io::{BufReader, BufWriter, Read, Write};
 const BUFFER_SIZE: usize = 128 * 1024;
 const CHUNK_SIZE: usize = BUFFER_SIZE * 1024;
 
-pub enum SyncResult {
-    Copied,
-    Skipped,
-}
-
 #[derive(Copy, Clone)]
 pub struct SyncOptions {
     /// Wether to preserve permissions of the source file after the destination is written.
@@ -82,6 +77,12 @@ impl SyncStatus {
             bytes_total: 0,
         }
     }
+}
+
+pub enum SyncResult {
+    Copied,
+    Skipped,
+    FileCopied(u64),
 }
 
 pub fn sync(source: &Path, destination: &Path, options: SyncOptions) -> Result<u64, Error> {
@@ -195,7 +196,7 @@ fn process_read_dir(
                         Ok(SyncResult::Copied) => {
                             dir_entry.client_state.dirs_copied += 1;
                         }
-                        Ok(SyncResult::Skipped) => {}
+                        Ok(_) => {}
                         Err(error) => {
                             dir_entry.client_state.errors += 1;
                             error!("Sync dir: '{}', error: '{}'", destination.display(), error);
@@ -207,7 +208,7 @@ fn process_read_dir(
                         Ok(SyncResult::Copied) => {
                             dir_entry.client_state.links_copied += 1;
                         }
-                        Ok(SyncResult::Skipped) => {}
+                        Ok(_) => {}
                         Err(error) => {
                             dir_entry.client_state.errors += 1;
                             error!(
@@ -220,15 +221,16 @@ fn process_read_dir(
                     dir_entry.client_state.links_total += 1;
                 } else if dir_entry.file_type.is_file() {
                     if source_path_buf.metadata().is_ok() {
-                        dir_entry.client_state.bytes_total +=
-                            source_path_buf.metadata().unwrap().len();
+                        let file_size = source_path_buf.metadata().unwrap().len();
                         match sync_file(&dir_entry, &destination, &options) {
-                            Ok(bytes_copied) => {
+                            Ok(SyncResult::FileCopied(bytes_copied)) => {
                                 dir_entry.client_state.bytes_copied += bytes_copied;
-                                if bytes_copied > 0 {
-                                    dir_entry.client_state.files_copied += 1;
-                                }
+                                dir_entry.client_state.files_copied += 1;
                             }
+                            Ok(SyncResult::Skipped) => {
+                                dir_entry.client_state.bytes_copied += file_size;
+                            }
+                            Ok(_) => {}
                             Err(error) => {
                                 dir_entry.client_state.errors += 1;
                                 error!(
@@ -238,6 +240,7 @@ fn process_read_dir(
                                 );
                             }
                         }
+                        dir_entry.client_state.bytes_total += file_size;
                         dir_entry.client_state.files_total += 1;
                     } else {
                         warn!("Could not read metadata for file: {:?}", source_path_buf);
@@ -328,7 +331,7 @@ pub fn sync_file(
     dir_entry: &DirEntry<((), SyncStatus)>,
     destination: &PathBuf,
     options: &SyncOptions,
-) -> Result<u64, Error> {
+) -> Result<SyncResult, Error> {
     let source = dir_entry.path();
     let files_differs = files_differs(dir_entry, destination)?;
     let mut bytes_copied = 0;
@@ -359,14 +362,16 @@ pub fn sync_file(
                 destination.display()
             );
         }
+        Ok(SyncResult::FileCopied(bytes_copied))
     } else {
         debug!(
             "File up to date, no need to copy: {} -> {}",
             source.display(),
             destination.display()
         );
+        Ok(SyncResult::Skipped)
     }
-    Ok(bytes_copied)
+    
 }
 
 pub fn assert_parent_exists(path: &PathBuf) -> Result<(), Error> {
