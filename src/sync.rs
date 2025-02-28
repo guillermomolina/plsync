@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use filetime::FileTime;
@@ -17,7 +18,7 @@ use std::fs::File;
 use std::io::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
 
-const BUFFER_SIZE: usize = 8 * 1024;
+const BUFFER_SIZE: usize = 128 * 1024;
 const CHUNK_SIZE: usize = BUFFER_SIZE * 1024;
 
 pub enum SyncResult {
@@ -54,128 +55,189 @@ pub fn parallelism(parallelism: usize) -> Parallelism {
     }
 }
 
+struct SyncStatus {
+    pub source: PathBuf,
+    pub destination: PathBuf,
+    pub options: SyncOptions,
+    pub dirs_copied: u64,
+    pub dirs_total: u64,
+    pub files_copied: u64,
+    pub files_total: u64,
+    pub links_copied: u64,
+    pub links_total: u64,
+    pub errors: u64,
+    pub bytes_copied: u64,
+    pub bytes_total: u64,
+}
+
+impl SyncStatus {
+    fn new(source: PathBuf, destination: PathBuf, options: SyncOptions) -> Self {
+        Self {
+            source,
+            destination,
+            options,
+            dirs_copied: 0,
+            dirs_total: 0,
+            files_copied: 0,
+            files_total: 0,
+            links_copied: 0,
+            links_total: 0,
+            errors: 0,
+            bytes_copied: 0,
+            bytes_total: 0,
+        }
+    }
+}
+
 pub fn sync(source: &Path, destination: &Path, options: SyncOptions) -> Result<u64, Error> {
-    let mut dirs_copied: u64 = 0;
-    let mut dirs_total: u64 = 0;
-    let mut files_copied: u64 = 0;
-    let mut files_total: u64 = 0;
-    let mut links_copied: u64 = 0;
-    let mut links_total: u64 = 0;
-    let mut errors: u64 = 0;
-    let mut bytes_copied: u64 = 0;
-    let mut bytes_total: u64 = 0;
-    let walk_dir = WalkDir::new(source.clone())
+    let sync_status = Arc::new(Mutex::new(SyncStatus::new(
+        source.to_path_buf(),
+        destination.to_path_buf(),
+        options,
+    )));
+    let walk_dir = WalkDir::new(source)
         .parallelism(parallelism(options.parallelism))
         .follow_links(false)
         .skip_hidden(false)
-        .process_read_dir(move |_, _, _, dir_entry_results| {
-            dir_entry_results
-                .iter_mut()
-                .for_each(|dir_entry_result| match dir_entry_result {
-                    Ok(dir_entry) => {
-                        let source_path_buf = dir_entry.path();
-                        let source = source_path_buf.strip_prefix(&source).unwrap().to_path_buf();
-                        let destination = destination.join(&source);
-                        if dir_entry.file_type.is_dir() {
-                            sync_dir(&dir_entry, &destination, &options);
-                        } else if dir_entry.file_type.is_symlink() {
-                            sync_symlink(&dir_entry, &destination, &options);
-                        } else if dir_entry.file_type.is_file() {
-                            sync_file(&dir_entry, &destination, &options).unwrap();
-                        } else {
-                            warn!("Unknown file type: {:?}", dir_entry.file_type);
-                        }
-                    }
-                    Err(error) => {
-                        error!("Read dir_entry error: {}", error);
-                    }
-                })
+        .process_read_dir({
+            let sync_status = Arc::clone(&sync_status);
+            move |_, _, _, dir_entry_results| {
+                process_read_dir(sync_status.clone(), dir_entry_results);
+            }
         });
-    let now = Instant::now();
-    let mut previous = now;
-    let mut bytes_prevoius = 0;
+    let start_time = Instant::now();
+    let mut previous_time = start_time;
+    let mut previous_bytes_copied = 0;
     for dir_entry in walk_dir {
         match dir_entry {
-            Ok(dir_entry) => {
-                let source_path_buf = dir_entry.path();
-                let source = source_path_buf.strip_prefix(&source).unwrap();
-                let destination = destination.join(source);
+            Ok(_dir_entry) => {
+                /*let source_path_buf = dir_entry.path();
                 if dir_entry.file_type.is_dir() {
-                    dirs_total += 1;
+                    sync_status.lock().unwrap().dirs_total += 1;
                 } else if dir_entry.file_type.is_symlink() {
-                    links_total += 1;
+                    sync_status.lock().unwrap().links_total += 1;
                 } else if dir_entry.file_type.is_file() {
-                    bytes_total += source_path_buf.metadata()?.len();
-                    files_total += 1;
+                    let mut status = sync_status.lock().unwrap();
+                    status.bytes_total += source_path_buf.metadata()?.len();
+                    status.files_total += 1;
                 } else {
                     warn!("Unknown file type: {:?}", dir_entry.file_type);
-                }
+                }*/
             }
             Err(error) => {
-                error!("Read dir_entry error: {}", error);
-                errors += 1;
+                sync_status.lock().unwrap().errors += 1;
+                error!("Walk dir_entry error: {}", error);
             }
         }
-        if options.show_progress && previous.elapsed().as_secs() > 1 {
-            let elapsed = now.elapsed();
-            println!("\nElapsed time: {}", humantime::format_duration(elapsed));
-            println!("Directories: {}/{}", dirs_copied, dirs_total);
-            println!("Files: {}/{}", files_copied, files_total);
-            println!("Symbolic links: {}/{}", links_copied, links_total);
-            println!(
-                "Bytes: {}/{}",
-                humansize::format_size(bytes_copied, humansize::BINARY),
-                humansize::format_size(bytes_total, humansize::BINARY)
+        if options.show_progress && previous_time.elapsed().as_secs() > 1 {
+            print_progress(
+                &sync_status,
+                start_time,
+                previous_time,
+                previous_bytes_copied,
             );
-            let elapsed_as_seconds = previous.elapsed().as_secs_f32();
-            let copied_bandwidth =
-                ((bytes_copied - bytes_prevoius) as f32 / elapsed_as_seconds) as u64;
-            println!(
-                "Copied bandwidth: {}/s",
-                humansize::format_size(copied_bandwidth, humansize::BINARY),
-            );
-            let synced_bandwidth = (bytes_total as f32 / elapsed_as_seconds) as u64;
-            println!(
-                "Synced bandwidth: {}/s",
-                humansize::format_size(synced_bandwidth, humansize::BINARY),
-            );
-            println!("Errors: {}", errors);
-            bytes_prevoius = bytes_copied;
-            previous = Instant::now();
+            previous_bytes_copied = sync_status.lock().unwrap().bytes_copied;
+            previous_time = Instant::now();
         }
         // debug!("{}", entry?.path().display());
     }
     if options.show_stats {
-        let elapsed = now.elapsed();
-        println!("Elapsed time: {}", humantime::format_duration(elapsed));
-        println!("Directories: {}/{}", dirs_copied, dirs_total);
-        println!("Files: {}/{}", files_copied, files_total);
-        println!("Symbolic links: {}/{}", links_copied, links_total);
-        println!(
-            "Bytes: {}/{}",
-            humansize::format_size(bytes_copied, humansize::BINARY),
-            humansize::format_size(bytes_total, humansize::BINARY)
-        );
-        let elapsed_as_seconds = elapsed.as_secs_f32();
-        let copied_bandwidth = (bytes_copied as f32 / elapsed_as_seconds) as u64;
-        println!(
-            "Copied bandwidth: {}/s",
-            humansize::format_size(copied_bandwidth, humansize::BINARY),
-        );
-        let synced_bandwidth = (bytes_total as f32 / elapsed_as_seconds) as u64;
-        println!(
-            "Synced bandwidth: {}/s",
-            humansize::format_size(synced_bandwidth, humansize::BINARY),
-        );
-        println!("Errors: {}", errors);
+        print_progress(&sync_status, start_time, start_time, 0);
     }
-    if errors > 0 {
+    if sync_status.lock().unwrap().errors > 0 {
         return Err(Error::new(
             std::io::ErrorKind::Other,
             "Errors occurred during sync",
         ));
     }
     Ok(0)
+}
+
+fn print_progress(
+    sync_status: &Arc<Mutex<SyncStatus>>,
+    start_time: Instant,
+    previous_time: Instant,
+    previous_bytes_copied: u64,
+) {
+    let elapsed = start_time.elapsed();
+    let synck_status_lckd = sync_status.lock().unwrap();
+    println!("\nElapsed time: {}", humantime::format_duration(elapsed));
+    println!(
+        "Directories: {}/{}",
+        synck_status_lckd.dirs_copied, synck_status_lckd.dirs_total
+    );
+    println!(
+        "Files: {}/{}",
+        synck_status_lckd.files_copied, synck_status_lckd.files_total
+    );
+    println!(
+        "Symbolic links: {}/{}",
+        synck_status_lckd.links_copied, synck_status_lckd.links_total
+    );
+    println!(
+        "Bytes: {}/{}",
+        humansize::format_size(synck_status_lckd.bytes_copied, humansize::BINARY),
+        humansize::format_size(synck_status_lckd.bytes_total, humansize::BINARY)
+    );
+    let elapsed_as_seconds = previous_time.elapsed().as_secs_f32();
+    let copied_bandwidth = ((synck_status_lckd.bytes_copied - previous_bytes_copied) as f32
+        / elapsed_as_seconds) as u64;
+    println!(
+        "Copied bandwidth: {}/s",
+        humansize::format_size(copied_bandwidth, humansize::BINARY),
+    );
+    let synced_bandwidth = (synck_status_lckd.bytes_total as f32 / elapsed_as_seconds) as u64;
+    println!(
+        "Synced bandwidth: {}/s",
+        humansize::format_size(synced_bandwidth, humansize::BINARY),
+    );
+    println!("Errors: {}", synck_status_lckd.errors);
+}
+
+fn process_read_dir(
+    sync_status: Arc<Mutex<SyncStatus>>,
+    dir_entry_results: &mut Vec<Result<DirEntry<((), ())>, jwalk::Error>>,
+) {
+    dir_entry_results
+        .iter_mut()
+        .for_each(|dir_entry_result| match dir_entry_result {
+            Ok(dir_entry) => {
+                let options = sync_status.lock().unwrap().options;
+                let source_path_buf = dir_entry.path();
+                let source = source_path_buf
+                    .strip_prefix(&sync_status.lock().unwrap().source)
+                    .unwrap()
+                    .to_path_buf();
+                let destination = sync_status.lock().unwrap().destination.join(&source);
+                if dir_entry.file_type.is_dir() {
+                    if let SyncResult::Copied =
+                        sync_dir(&dir_entry, &destination, &options).unwrap()
+                    {
+                        sync_status.lock().unwrap().dirs_copied += 1;
+                    }
+                } else if dir_entry.file_type.is_symlink() {
+                    if let SyncResult::Copied =
+                        sync_symlink(&dir_entry, &destination, &options).unwrap()
+                    {
+                        sync_status.lock().unwrap().links_copied += 1;
+                    }
+                } else if dir_entry.file_type.is_file() {
+                    sync_status.lock().unwrap().bytes_total +=
+                        source_path_buf.metadata().unwrap().len();
+                    let file_bytes_copied = sync_file(&dir_entry, &destination, &options).unwrap();
+                    sync_status.lock().unwrap().bytes_copied += file_bytes_copied;
+                    if file_bytes_copied > 0 {
+                        sync_status.lock().unwrap().files_copied += 1;
+                    }
+                    sync_status.lock().unwrap().files_total += 1;
+                } else {
+                    warn!("Unknown file type: {:?}", dir_entry.file_type);
+                }
+            }
+            Err(error) => {
+                error!("Read dir_entry error: {}", error);
+            }
+        })
 }
 
 pub fn sync_dir(
@@ -275,7 +337,7 @@ pub fn sync_file(
                 destination.display()
             );
             bytes_copied = if source_length as usize > CHUNK_SIZE && options.parallelism > 1 {
-                parallel_copy_file(&source, &destination)?
+                parallel_copy_file(&source, &destination, &options)?
             } else {
                 std::fs::copy(&source, &destination)?
             }
@@ -307,7 +369,11 @@ pub fn assert_parent_exists(path: &PathBuf) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn parallel_copy_file(source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+pub fn parallel_copy_file_mmap(
+    source: &PathBuf,
+    destination: &PathBuf,
+    _options: &SyncOptions,
+) -> Result<u64, Error> {
     let source_file = File::open(&source)?;
     let file_len = source_file.metadata()?.len();
     let destination_file = OpenOptions::new()
@@ -326,7 +392,11 @@ pub fn parallel_copy_file(source: &PathBuf, destination: &PathBuf) -> Result<u64
     Ok(file_len)
 }
 
-pub fn parallel_copy_file2(source: &PathBuf, destination: &PathBuf, options: &SyncOptions) -> Result<u64, Error> {
+pub fn parallel_copy_file(
+    source: &PathBuf,
+    destination: &PathBuf,
+    options: &SyncOptions,
+) -> Result<u64, Error> {
     let source_file = File::open(&source)?;
     let destination_file = File::create(&destination)?;
     let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);

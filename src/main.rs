@@ -1,6 +1,6 @@
 use clap::Parser;
 use log::{error, info, warn};
-use plsync::{Sync, SyncOptions};
+use plsync::{sync, SyncOptions};
 use std::env;
 use std::path::PathBuf;
 use std::process;

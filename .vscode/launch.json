@@ -20,12 +20,12 @@
                 }
             },
             "args": [
-                "-n",
+                // "-n",
                 "--progress",
                 "--stats",
                 "--parallelism=8",
-                // "--log-level=info",
-                "/user/",
+                "--log-level=debug",
+                "/user/Temporal/",
                 "/user/Temporal2/"
             ],
             "cwd": "${workspaceFolder}"
