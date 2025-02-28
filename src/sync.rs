@@ -111,7 +111,7 @@ pub fn sync(source: &Path, destination: &Path, options: SyncOptions) -> Result<u
     for dir_entry in walk_dir {
         match dir_entry {
             Ok(dir_entry) => {
-                debug!("{}", dir_entry.path().display());
+                debug!("Found directory entry {}", dir_entry.path().display());
             }
             Err(error) => {
                 sync_status.lock().unwrap().errors += 1;
@@ -203,11 +203,10 @@ fn process_read_dir(
                         Ok(SyncResult::Copied) => {
                             sync_status.lock().unwrap().dirs_copied += 1;
                         }
-                        Ok(SyncResult::Skipped) => {
-                        }
+                        Ok(SyncResult::Skipped) => {}
                         Err(error) => {
                             sync_status.lock().unwrap().errors += 1;
-                            error!("Sync dir error: {}", error);
+                            error!("Sync dir: '{}', error: '{}'", destination.display(), error);
                         }
                     }
                     sync_status.lock().unwrap().dirs_total += 1;
@@ -216,16 +215,19 @@ fn process_read_dir(
                         Ok(SyncResult::Copied) => {
                             sync_status.lock().unwrap().links_copied += 1;
                         }
-                        Ok(SyncResult::Skipped) => {
-                        }
+                        Ok(SyncResult::Skipped) => {}
                         Err(error) => {
                             sync_status.lock().unwrap().errors += 1;
-                            error!("Sync symlink error: {}", error);
+                            error!(
+                                "Sync symlink: '{}', error: '{}'",
+                                destination.display(),
+                                error
+                            );
                         }
-                    }   
+                    }
                     sync_status.lock().unwrap().links_total += 1;
                 } else if dir_entry.file_type.is_file() {
-                    if source_path_buf.metadata().is_ok() { 
+                    if source_path_buf.metadata().is_ok() {
                         sync_status.lock().unwrap().bytes_total +=
                             source_path_buf.metadata().unwrap().len();
                         match sync_file(&dir_entry, &destination, &options) {
@@ -237,10 +239,14 @@ fn process_read_dir(
                             }
                             Err(error) => {
                                 sync_status.lock().unwrap().errors += 1;
-                                error!("Sync file error: {}", error);
+                                error!(
+                                    "Sync file: '{}', error: '{}'",
+                                    destination.display(),
+                                    error
+                                );
                             }
                         }
-                        sync_status.lock().unwrap().files_total += 1; 
+                        sync_status.lock().unwrap().files_total += 1;
                     } else {
                         warn!("Could not read metadata for file: {:?}", source_path_buf);
                     }
@@ -354,14 +360,20 @@ pub fn sync_file(
                 parallel_copy_file(&source, &destination, &options)?
             } else {
                 std::fs::copy(&source, &destination)?
-            }
+            };
+            info!(
+                "Copied file: {} -> {}",
+                source.display(),
+                destination.display()
+            );
         }
+    } else {
+        debug!(
+            "File up to date, no need to copy: {} -> {}",
+            source.display(),
+            destination.display()
+        );
     }
-    info!(
-        "Copied file: {} -> {}",
-        source.display(),
-        destination.display()
-    );
     Ok(bytes_copied)
 }
 
