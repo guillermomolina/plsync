@@ -105,7 +105,7 @@ fn main() {
             eprintln!("{}", err);
             process::exit(1);
         }
-        Ok(sync_status) if sync_status.dirs_errors + sync_status.files_errors + sync_status.links_errors > 0 => {
+        Ok(sync_status) if sync_status.errors_total() > 0 => {
             process::exit(1);
         }
         _ => {

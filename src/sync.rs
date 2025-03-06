@@ -1,3 +1,5 @@
+use std::fmt;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -15,10 +17,68 @@ use std::io::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::time::Duration;
 
+use jwalk::rayon::prelude::*;
+use memmap2::{Mmap, MmapMut};
+
 use crate::Throttle;
 
 const BUFFER_SIZE: usize = 128 * 1024;
 const CHUNK_SIZE: usize = BUFFER_SIZE * 1024;
+
+#[derive(Debug)]
+pub struct DirError {
+    pub path: PathBuf,
+    pub error: Error,
+}
+
+impl fmt::Display for DirError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Failed to process directory {}: {}",
+            self.path.display(),
+            self.error
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct SymLinkError {
+    pub path: PathBuf,
+    pub error: Error,
+}
+
+impl fmt::Display for SymLinkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Failed to process symlink {}: {}",
+            self.path.display(),
+            self.error
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct FileError {
+    pub path: PathBuf,
+    pub error: Error,
+}
+
+impl fmt::Display for FileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Failed to process file {}: {}",
+            self.path.display(),
+            self.error
+        )
+    }
+}
+
+impl std::error::Error for DirError {}
+impl std::error::Error for SymLinkError {}
+impl std::error::Error for FileError {}
 
 #[derive(Clone, Default, Debug)]
 pub struct SyncStatus {
@@ -35,6 +95,16 @@ pub struct SyncStatus {
     pub bytes_total: u64,
 }
 
+impl SyncStatus {
+    pub fn entries_total(&self) -> u64 {
+        self.dirs_total + self.files_total + self.links_total
+    }
+
+    pub fn errors_total(&self) -> u64 {
+        self.dirs_errors + self.files_errors + self.links_errors
+    }
+}
+
 #[derive(Debug, Default)]
 pub enum SyncResult {
     #[default]
@@ -46,7 +116,7 @@ pub enum SyncResult {
     FileCopied(u64),
 }
 
-type SyncOutcome = Option<Result<SyncResult, Error>>;
+type SyncOutcome = Option<Result<SyncResult, Box<dyn std::error::Error + Send>>>;
 type SyncDirEntry = DirEntry<((), SyncOutcome)>;
 type SyncWalkDir = WalkDirGeneric<((), SyncOutcome)>;
 
@@ -78,12 +148,10 @@ pub fn sync(
     let mut status = SyncStatus::default();
     let sync_iterator = options.sync_iterator(source_path, destination_path);
     let progress = Throttle::new(Duration::from_millis(100), Duration::from_secs(1).into());
-    let mut entries_traversed: u64 = 0;
     for dir_entry in sync_iterator {
         progress.throttled(|| {
             if let Some(err) = err.as_mut() {
-                entries_traversed += 1;
-                write!(err, "Enumerating {} items\r", entries_traversed).ok();
+                write!(err, "Enumerating {} items\r", status.entries_total()).ok();
             }
         });
         match dir_entry {
@@ -114,7 +182,24 @@ pub fn sync(
                         status.files_copied += 1;
                         status.bytes_copied += bytes_copied;
                     }
-                    Some(Err(_)) => {}
+                    Some(Err(e)) if e.is::<DirError>() => {
+                        status.dirs_total += 1;
+                        status.dirs_errors += 1;
+                        writeln!(err.as_mut().unwrap(), "{}", e).ok();
+                    }
+                    Some(Err(e)) if e.is::<SymLinkError>() => {
+                        status.links_total += 1;
+                        status.links_errors += 1;
+                        writeln!(err.as_mut().unwrap(), "{}", e).ok();
+                    }
+                    Some(Err(e)) if e.is::<FileError>() => {
+                        status.files_total += 1;
+                        status.files_errors += 1;
+                        writeln!(err.as_mut().unwrap(), "{}", e).ok();
+                    }
+                    Some(Err(e)) => {
+                        writeln!(err.as_mut().unwrap(), "{}", e).ok();
+                    }
                     None => {}
                 }
                 // writeln!(out, "Entry: {:?}", dir_entry.path()).ok();
@@ -167,14 +252,10 @@ impl SyncOptions {
                 // assert_parent_exists(&destination)?;
                 // debug!("Creating directory: {}", destination.display());
                 if let Err(e) = std::fs::create_dir_all(&destination) {
-                    return Some(Err(Error::new(
-                        e.kind(),
-                        format!(
-                            "Failed to create directory: {}: {}",
-                            destination.display(),
-                            e
-                        ),
-                    )));
+                    return Some(Err(Box::new(DirError {
+                        path: destination.clone(),
+                        error: e,
+                    })));
                 }
             }
             // info!("Created directory: {}", destination.display());
@@ -184,10 +265,10 @@ impl SyncOptions {
         {
             if !self.perform_dry_run && self.preserve_permissions {
                 if let Err(e) = self.copy_permissions(&dir_entry, destination) {
-                    return Some(Err(Error::new(
-                        e.kind(),
-                        format!("Failed to copy permissions: {}", e),
-                    )));
+                    return Some(Err(Box::new(DirError {
+                        path: destination.clone(),
+                        error: e,
+                    })));
                 }
             }
         }
@@ -211,14 +292,10 @@ impl SyncOptions {
             } else {
                 // debug!("Deleting existing file: {}", destination.display());
                 if let Err(e) = std::fs::remove_file(&destination) {
-                    return Some(Err(Error::new(
-                        e.kind(),
-                        format!(
-                            "Failed to delete existing file: {}: {}",
-                            destination.display(),
-                            e
-                        ),
-                    )));
+                    return Some(Err(Box::new(SymLinkError {
+                        path: destination.clone(),
+                        error: e,
+                    })));
                 }
             }
         }
@@ -226,22 +303,17 @@ impl SyncOptions {
             // debug!("Would create symlink: {} -> {}", destination.display(), link.display());
         } else {
             if let Err(e) = self.ensure_parent_exists(&destination) {
-                return Some(Err(Error::new(
-                    e.kind(),
-                    format!("Failed to ensure parent exists: {}", e),
-                )));
+                return Some(Err(Box::new(SymLinkError {
+                    path: destination.clone(),
+                    error: e,
+                })));
             }
             // debug!("Creating symlink: {} -> {}", destination.display(), link.display());
             if let Err(e) = std::os::unix::fs::symlink(&link, &destination) {
-                return Some(Err(Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to create symlink: {} -> {}: {}",
-                        link.display(),
-                        destination.display(),
-                        e
-                    ),
-                )));
+                return Some(Err(Box::new(SymLinkError {
+                    path: destination.clone(),
+                    error: e,
+                })));
             }
         }
         // info!("Created symlink: {} -> {}", destination.display(), link.display());
@@ -258,41 +330,31 @@ impl SyncOptions {
                 Some(Ok(SyncResult::FileCopied(source_length)))
             } else {
                 // debug!("Copying file: {} -> {}", source.display(), destination.display());
-                let bytes_copied ;                
+                let bytes_copied;
                 if let Err(e) = self.ensure_parent_exists(&destination) {
-                    return Some(Err(Error::new(
-                        e.kind(),
-                        format!("Failed to ensure parent exists: {}", e),
-                    )));
+                    return Some(Err(Box::new(FileError {
+                        path: destination.clone(),
+                        error: e,
+                    })));
                 }
                 if source_length as usize > CHUNK_SIZE && self.parallelism > 1 {
-                    match self.parallel_copy_file(&source, &destination) {
+                    match self.copy_file_parallel(&source, &destination) {
                         Ok(b) => bytes_copied = b,
                         Err(e) => {
-                            return Some(Err(Error::new(
-                                e.kind(),
-                                format!(
-                                    "Failed to parallel copy file: {} -> {}: {}",
-                                    source.display(),
-                                    destination.display(),
-                                    e
-                                ),
-                            )))
+                            return Some(Err(Box::new(FileError {
+                                path: destination.clone(),
+                                error: e,
+                            })))
                         }
                     }
                 } else {
-                    match self.serial_copy_file(&source, &destination) {
+                    match self.copy_file_serial(&source, &destination) {
                         Ok(b) => bytes_copied = b,
                         Err(e) => {
-                            return Some(Err(Error::new(
-                                e.kind(),
-                                format!(
-                                    "Failed to serial copy file: {} -> {}: {}",
-                                    source.display(),
-                                    destination.display(),
-                                    e
-                                ),
-                            )))
+                            return Some(Err(Box::new(FileError {
+                                path: destination.clone(),
+                                error: e,
+                            })))
                         }
                     }
                 }
@@ -314,7 +376,7 @@ impl SyncOptions {
                 pool: ThreadPoolBuilder::new()
                     .stack_size(128 * 1024)
                     .num_threads(n)
-                    .thread_name(|idx| format!("sync-thread-{idx}"))
+                    .thread_name(|idx| format!("plsync-thread-{idx}"))
                     .build()
                     .expect("fields we set cannot fail")
                     .into(),
@@ -326,7 +388,7 @@ impl SyncOptions {
     fn copy_permissions(self, entry: &SyncDirEntry, destination: &PathBuf) -> Result<(), Error> {
         let metadata = entry.metadata()?;
         let permissions = metadata.permissions();
-        // debug!("Setting permissions {:o} on {}", permissions.mode(), destination.display()); 
+        // debug!("Setting permissions {:o} on {}", permissions.mode(), destination.display());
         std::fs::set_permissions(&destination, permissions)
     }
 
@@ -339,34 +401,57 @@ impl SyncOptions {
         Ok(())
     }
 
-    fn serial_copy_file(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
-        std::fs::copy(&source, &destination)
+    fn copy_file_serial(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+        std::fs::copy(&source, &destination).map_err(|e| {
+            Error::new(
+                e.kind(),
+                format!(
+                    "Failed to copy file: {} -> {}: {}",
+                    source.display(),
+                    destination.display(),
+                    e
+                ),
+            )
+        })
     }
 
-    // fn parallel_copy_file_mmap(
-    //     self,
-    //     source: &PathBuf,
-    //     destination: &PathBuf,
-    // ) -> Result<u64, Error> {
-    //     let source_file = File::open(&source)?;
-    //     let file_len = source_file.metadata()?.len();
-    //     let destination_file = OpenOptions::new()
-    //         .read(true)
-    //         .write(true)
-    //         .create(true)
-    //         .open(&destination)?;
-    //     destination_file.set_len(file_len)?;
-    //     let source = memmap2::Mmap::map(&source_file)?;
-    //     let mut dest = memmap2::MmapMut::map_mut(&destination_file)?;
+    fn copy_file_memmap(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+        let source_file = File::open(&source)?;
+        let file_len = source_file.metadata()?.len();
+        let destination_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&destination)?;
+        destination_file.set_len(file_len)?;
+        let source = unsafe { Mmap::map(&source_file)? };
+        let mut dest = unsafe { MmapMut::map_mut(&destination_file)? };
 
-    //     dest.par_chunks_mut(CHUNK_SIZE)
-    //         .zip(source.par_chunks(CHUNK_SIZE))
-    //         .for_each(|(dest_chunk, source_chunk)| dest_chunk.copy_from_slice(source_chunk));
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(self.parallelism)
+            .build()
+            .unwrap();
 
-    //     Ok(file_len)
-    // }
+        pool.install(|| {
+            dest.par_chunks_mut(CHUNK_SIZE)
+                .zip(source.par_chunks(CHUNK_SIZE))
+                .for_each(|(dest_chunk, source_chunk)| dest_chunk.copy_from_slice(source_chunk));
+        });
 
-    fn parallel_copy_file(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+        dest.flush()?;
+
+        if dest.len() as u64 != file_len {
+            return Err(Error::new(
+                std::io::ErrorKind::Other,
+                "Copied length mismatch",
+            ));
+        }
+
+        Ok(file_len)
+    }
+
+    fn copy_file_parallel(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
         let source_file = File::open(&source)?;
         let destination_file = File::create(&destination)?;
         let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);
@@ -375,7 +460,7 @@ impl SyncOptions {
         let mut buffer = vec![0; CHUNK_SIZE];
         let mut total_bytes_copied = 0;
         let source_metadata = source.metadata()?;
-        
+
         loop {
             let bytes_read = reader.read(&mut buffer)?;
             if bytes_read == 0 {
