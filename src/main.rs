@@ -2,6 +2,7 @@ use clap::Parser;
 use log::{error, info, warn};
 use plsync::{sync, SyncOptions};
 use std::env;
+use std::io::{stderr, stdout};
 use std::path::PathBuf;
 use std::process;
 
@@ -35,12 +36,12 @@ struct Parameters {
     #[clap(
         short = 'p',
         long = "parallelism",
-        help = "Allow up to n sync jobs (default is the number of online processors)",
+        help = "Allow up to n sync jobs (default is the number of online processors)"
     )]
     parallelism: Option<usize>,
 
     #[clap(
-        long = "log-level", 
+        long = "log-level",
         help = "Set the log level (e.g., info, debug, trace)"
     )]
     log_level: Option<String>,
@@ -62,7 +63,10 @@ fn get_parallelism(arguments: &Parameters) -> usize {
             warn!("Requested parallelism is greater than available processors.");
         }
         if parallelism > MAX_PARALLELISM {
-            error!("Requested parallelism is greater than {} processors.", MAX_PARALLELISM);
+            error!(
+                "Requested parallelism is greater than {} processors.",
+                MAX_PARALLELISM
+            );
             process::exit(1);
         }
         parallelism
@@ -90,17 +94,18 @@ fn main() {
         preserve_permissions: !arguments.no_preserve_permissions,
         perform_dry_run: arguments.perform_trial_run,
         parallelism: get_parallelism(&arguments),
-        show_progress: arguments.show_progress,
-        show_stats: arguments.show_stats,
     };
 
-    let stats = sync(source, destination, options);
-    match stats {
+    let stdout = stdout();
+    let stdout_locked = stdout.lock();
+    let stderr = Some(stderr());
+    let outcome = sync(stdout_locked, stderr, source, destination, options);
+    match outcome {
         Err(err) => {
             eprintln!("{}", err);
             process::exit(1);
         }
-        Ok(errors) if errors > 0 => {
+        Ok(sync_status) if sync_status.dirs_errors + sync_status.files_errors + sync_status.links_errors > 0 => {
             process::exit(1);
         }
         _ => {
