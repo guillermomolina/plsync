@@ -23,10 +23,10 @@
                 // "-n",
                 "--progress",
                 "--stats",
-                "--parallelism=4",
+                "--parallelism=8",
                 // "--log-level=debug",
-                "/user/Red/Temporal/",
-                "/user/Red/Temporal2/"
+                "/user/Temporal/",
+                "/user/Temporal2/"
             ],
             "cwd": "${workspaceFolder}"
         },

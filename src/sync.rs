@@ -1,4 +1,3 @@
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -10,7 +9,7 @@ use jwalk::rayon::ThreadPoolBuilder;
 use jwalk::DirEntry;
 use jwalk::Parallelism;
 use jwalk::WalkDirGeneric;
-use log::{debug, info, error};
+//use log::{debug, info, error};
 use std::fs::File;
 use std::io::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -70,7 +69,7 @@ impl Default for SyncOptions {
 }
 
 pub fn sync(
-    mut out: impl Write,
+    mut _out: impl Write,
     mut err: Option<impl Write>,
     source_path: &Path,
     destination_path: &Path,
@@ -115,14 +114,12 @@ pub fn sync(
                         status.files_copied += 1;
                         status.bytes_copied += bytes_copied;
                     }
-                    Some(Err(_)) => {
-                    }
+                    Some(Err(_)) => {}
                     None => {}
                 }
-                writeln!(out, "Entry: {:?}", dir_entry.path()).ok();
+                // writeln!(out, "Entry: {:?}", dir_entry.path()).ok();
             }
-            Err(_) => {
-            }
+            Err(_) => {}
         }
     }
     Ok(status)
@@ -165,22 +162,32 @@ impl SyncOptions {
         let mut sync_result = SyncResult::DirSkipped;
         if !destination.exists() {
             if self.perform_dry_run {
-                debug!("Would create directory: {}", destination.display());
+                // debug!("Would create directory: {}", destination.display());
             } else {
                 // assert_parent_exists(&destination)?;
-                debug!("Creating directory: {}", destination.display());
+                // debug!("Creating directory: {}", destination.display());
                 if let Err(e) = std::fs::create_dir_all(&destination) {
-                    error!("Failed to create directory: {}: {}", destination.display(), e);
+                    return Some(Err(Error::new(
+                        e.kind(),
+                        format!(
+                            "Failed to create directory: {}: {}",
+                            destination.display(),
+                            e
+                        ),
+                    )));
                 }
             }
-            info!("Created directory: {}", destination.display());
+            // info!("Created directory: {}", destination.display());
             sync_result = SyncResult::DirCopied;
         }
         #[cfg(unix)]
         {
             if !self.perform_dry_run && self.preserve_permissions {
                 if let Err(e) = self.copy_permissions(&dir_entry, destination) {
-                    error!("Failed to copy permissions: {}", e);
+                    return Some(Err(Error::new(
+                        e.kind(),
+                        format!("Failed to copy permissions: {}", e),
+                    )));
                 }
             }
         }
@@ -200,38 +207,44 @@ impl SyncOptions {
                 }
             }
             if self.perform_dry_run {
-                debug!("Would delete existing file: {}", destination.display());
+                // debug!("Would delete existing file: {}", destination.display());
             } else {
-                debug!("Deleting existing file: {}", destination.display());
+                // debug!("Deleting existing file: {}", destination.display());
                 if let Err(e) = std::fs::remove_file(&destination) {
-                    error!("Failed to delete existing file: {}: {}", destination.display(), e);
-                };
+                    return Some(Err(Error::new(
+                        e.kind(),
+                        format!(
+                            "Failed to delete existing file: {}: {}",
+                            destination.display(),
+                            e
+                        ),
+                    )));
+                }
             }
         }
         if self.perform_dry_run {
-            debug!(
-                "Would create symlink: {} -> {}",
-                destination.display(),
-                link.display(),
-            );
+            // debug!("Would create symlink: {} -> {}", destination.display(), link.display());
         } else {
             if let Err(e) = self.ensure_parent_exists(&destination) {
-                error!("Failed to ensure parent exists: {}", e);
+                return Some(Err(Error::new(
+                    e.kind(),
+                    format!("Failed to ensure parent exists: {}", e),
+                )));
             }
-            debug!(
-                "Creating symlink: {} -> {}",
-                destination.display(),
-                link.display(),
-            );
+            // debug!("Creating symlink: {} -> {}", destination.display(), link.display());
             if let Err(e) = std::os::unix::fs::symlink(&link, &destination) {
-                error!("Failed to create symlink: {} -> {}: {}", link.display(), destination.display(), e);
+                return Some(Err(Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to create symlink: {} -> {}: {}",
+                        link.display(),
+                        destination.display(),
+                        e
+                    ),
+                )));
             }
         }
-        info!(
-            "Created symlink: {} -> {}",
-            destination.display(),
-            link.display(),
-        );
+        // info!("Created symlink: {} -> {}", destination.display(), link.display());
         Some(Ok(SyncResult::SymLinkCopied))
     }
 
@@ -240,41 +253,53 @@ impl SyncOptions {
         let files_differs = self.files_differs(dir_entry, destination).unwrap();
         let source_length = source.metadata().unwrap().len();
         if !destination.exists() || files_differs {
-            let bytes_copied;
             if self.perform_dry_run {
-                debug!(
-                    "Would copy file: {} -> {}",
-                    source.display(),
-                    destination.display()
-                );
-                bytes_copied = source_length;
+                // debug!("File up to date, no need to copy: {} -> {}", source.display(), destination.display());
+                Some(Ok(SyncResult::FileCopied(source_length)))
             } else {
-                debug!(
-                    "Copying file: {} -> {}",
-                    source.display(),
-                    destination.display()
-                );
+                // debug!("Copying file: {} -> {}", source.display(), destination.display());
+                let bytes_copied ;                
                 if let Err(e) = self.ensure_parent_exists(&destination) {
-                    error!("Failed to ensure parent exists: {}", e);
+                    return Some(Err(Error::new(
+                        e.kind(),
+                        format!("Failed to ensure parent exists: {}", e),
+                    )));
                 }
-                bytes_copied = if source_length as usize > CHUNK_SIZE && self.parallelism > 1 {
-                    self.parallel_copy_file(&source, &destination).unwrap()
+                if source_length as usize > CHUNK_SIZE && self.parallelism > 1 {
+                    match self.parallel_copy_file(&source, &destination) {
+                        Ok(b) => bytes_copied = b,
+                        Err(e) => {
+                            return Some(Err(Error::new(
+                                e.kind(),
+                                format!(
+                                    "Failed to parallel copy file: {} -> {}: {}",
+                                    source.display(),
+                                    destination.display(),
+                                    e
+                                ),
+                            )))
+                        }
+                    }
                 } else {
-                    std::fs::copy(&source, &destination).unwrap()
-                };
-                info!(
-                    "Copied file: {} -> {}",
-                    source.display(),
-                    destination.display()
-                );
+                    match self.serial_copy_file(&source, &destination) {
+                        Ok(b) => bytes_copied = b,
+                        Err(e) => {
+                            return Some(Err(Error::new(
+                                e.kind(),
+                                format!(
+                                    "Failed to serial copy file: {} -> {}: {}",
+                                    source.display(),
+                                    destination.display(),
+                                    e
+                                ),
+                            )))
+                        }
+                    }
+                }
+                // info!("Copied file: {} -> {}", source.display(), destination.display());
+                Some(Ok(SyncResult::FileCopied(bytes_copied)))
             }
-            Some(Ok(SyncResult::FileCopied(bytes_copied)))
         } else {
-            debug!(
-                "File up to date, no need to copy: {} -> {}",
-                source.display(),
-                destination.display()
-            );
             Some(Ok(SyncResult::FileSkipped(source_length)))
         }
     }
@@ -301,22 +326,21 @@ impl SyncOptions {
     fn copy_permissions(self, entry: &SyncDirEntry, destination: &PathBuf) -> Result<(), Error> {
         let metadata = entry.metadata()?;
         let permissions = metadata.permissions();
-        debug!(
-            "Setting permissions {:o} on {}",
-            permissions.mode(),
-            destination.display()
-        );
-        std::fs::set_permissions(&destination, permissions)?;
-        Ok(())
+        // debug!("Setting permissions {:o} on {}", permissions.mode(), destination.display()); 
+        std::fs::set_permissions(&destination, permissions)
     }
 
     fn ensure_parent_exists(self, path: &PathBuf) -> Result<(), Error> {
         let path_parent = path.parent().unwrap();
         if !path_parent.exists() {
-            debug!("Creating parent directory: {}", path_parent.display());
+            // debug!("Creating parent directory: {}", path_parent.display());
             std::fs::create_dir_all(&path_parent)?;
         }
         Ok(())
+    }
+
+    fn serial_copy_file(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+        std::fs::copy(&source, &destination)
     }
 
     // fn parallel_copy_file_mmap(
@@ -351,8 +375,7 @@ impl SyncOptions {
         let mut buffer = vec![0; CHUNK_SIZE];
         let mut total_bytes_copied = 0;
         let source_metadata = source.metadata()?;
-        let file_len = source_metadata.len();
-
+        
         loop {
             let bytes_read = reader.read(&mut buffer)?;
             if bytes_read == 0 {
@@ -369,13 +392,7 @@ impl SyncOptions {
                 writer.write_all(&chunk)?;
                 let bytes_copied = chunk.len() as u64;
                 total_bytes_copied += bytes_copied;
-                debug!(
-                    "Copied chunk {}/{} from {} to {}",
-                    humansize::format_size(total_bytes_copied, humansize::BINARY),
-                    humansize::format_size(file_len, humansize::BINARY),
-                    source.display(),
-                    destination.display()
-                );
+                // debug!("Copied chunk {}/{} from {} to {}", humansize::format_size(total_bytes_copied, humansize::BINARY), humansize::format_size(file_len, humansize::BINARY), source.display(), destination.display());
             }
         }
         writer.flush()?;
