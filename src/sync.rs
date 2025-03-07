@@ -175,7 +175,7 @@ pub fn sync(
 ) -> Result<SyncStatus, Error> {
     let mut status = SyncStatus::default();
     let sync_iterator = options.sync_iterator(source_path, destination_path);
-    let progress = Throttle::new(Duration::from_millis(100), Duration::from_secs(1).into());
+    let progress = Throttle::new(Duration::from_millis(100), None);
     for dir_entry in sync_iterator {
         progress.throttled(|| {
             if let Some(err) = err.as_mut() {
