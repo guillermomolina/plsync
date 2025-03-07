@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs::OpenOptions;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -11,7 +12,7 @@ use jwalk::rayon::ThreadPoolBuilder;
 use jwalk::DirEntry;
 use jwalk::Parallelism;
 use jwalk::WalkDirGeneric;
-//use log::{debug, info, error};
+use log::{debug, info};
 use std::fs::File;
 use std::io::Error;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -103,6 +104,14 @@ impl SyncStatus {
     pub fn errors_total(&self) -> u64 {
         self.dirs_errors + self.files_errors + self.links_errors
     }
+
+    pub fn copied_total(&self) -> u64 {
+        self.dirs_copied + self.files_copied + self.links_copied
+    }
+
+    pub fn skipped_total(&self) -> u64 {
+        self.entries_total() - self.copied_total()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -179,7 +188,7 @@ pub fn sync(
     for dir_entry in sync_iterator {
         progress.throttled(|| {
             if let Some(err) = err.as_mut() {
-                write!(err, "Enumerating {} items\r", status.entries_total()).ok();
+                write!(err, "Syncing {} items, copied {}, skipped {}\r", status.entries_total(), status.copied_total(), status.skipped_total()).ok();
             }
         });
         match dir_entry {
@@ -275,10 +284,10 @@ impl SyncOptions {
         let mut sync_result = SyncResult::DirSkipped;
         if !destination.exists() {
             if self.perform_dry_run {
-                // debug!("Would create directory: {}", destination.display());
+                debug!("Would create directory: {}", destination.display());
             } else {
                 // assert_parent_exists(&destination)?;
-                // debug!("Creating directory: {}", destination.display());
+                debug!("Creating directory: {}", destination.display());
                 if let Err(e) = std::fs::create_dir_all(&destination) {
                     return Some(Err(Box::new(DirError {
                         path: destination.clone(),
@@ -286,7 +295,7 @@ impl SyncOptions {
                     })));
                 }
             }
-            // info!("Created directory: {}", destination.display());
+            info!("Created directory: {}", destination.display());
             sync_result = SyncResult::DirCopied;
         }
         #[cfg(unix)]
@@ -316,9 +325,9 @@ impl SyncOptions {
                 }
             }
             if self.perform_dry_run {
-                // debug!("Would delete existing file: {}", destination.display());
+                debug!("Would delete existing file: {}", destination.display());
             } else {
-                // debug!("Deleting existing file: {}", destination.display());
+                debug!("Deleting existing file: {}", destination.display());
                 if let Err(e) = std::fs::remove_file(&destination) {
                     return Some(Err(Box::new(SymLinkError {
                         path: destination.clone(),
@@ -328,7 +337,7 @@ impl SyncOptions {
             }
         }
         if self.perform_dry_run {
-            // debug!("Would create symlink: {} -> {}", destination.display(), link.display());
+            debug!("Would create symlink: {} -> {}", destination.display(), link.display());
         } else {
             if let Err(e) = self.ensure_parent_exists(&destination) {
                 return Some(Err(Box::new(SymLinkError {
@@ -336,7 +345,7 @@ impl SyncOptions {
                     error: e,
                 })));
             }
-            // debug!("Creating symlink: {} -> {}", destination.display(), link.display());
+            debug!("Creating symlink: {} -> {}", destination.display(), link.display());
             if let Err(e) = std::os::unix::fs::symlink(&link, &destination) {
                 return Some(Err(Box::new(SymLinkError {
                     path: destination.clone(),
@@ -344,7 +353,7 @@ impl SyncOptions {
                 })));
             }
         }
-        // info!("Created symlink: {} -> {}", destination.display(), link.display());
+        info!("Created symlink: {} -> {}", destination.display(), link.display());
         Some(Ok(SyncResult::SymLinkCopied))
     }
 
@@ -354,10 +363,10 @@ impl SyncOptions {
         let source_length = source.metadata().unwrap().len();
         if !destination.exists() || files_differs {
             if self.perform_dry_run {
-                // debug!("File up to date, no need to copy: {} -> {}", source.display(), destination.display());
+                debug!("File up to date, no need to copy: {} -> {}", source.display(), destination.display());
                 Some(Ok(SyncResult::FileCopied(source_length)))
             } else {
-                // debug!("Copying file: {} -> {}", source.display(), destination.display());
+                debug!("Copying file: {} -> {}", source.display(), destination.display());
                 let bytes_copied;
                 if let Err(e) = self.ensure_parent_exists(&destination) {
                     return Some(Err(Box::new(FileError {
@@ -387,7 +396,7 @@ impl SyncOptions {
                         }
                     }
                 }
-                // info!("Copied file: {} -> {}", source.display(), destination.display());
+                info!("Copied file: {} -> {}", source.display(), destination.display());
                 Some(Ok(SyncResult::FileCopied(bytes_copied)))
             }
         } else {
@@ -417,14 +426,14 @@ impl SyncOptions {
     fn copy_permissions(self, entry: &SyncDirEntry, destination: &PathBuf) -> Result<(), Error> {
         let metadata = entry.metadata()?;
         let permissions = metadata.permissions();
-        // debug!("Setting permissions {:o} on {}", permissions.mode(), destination.display());
+        debug!("Setting permissions {:o} on {}", permissions.mode(), destination.display());
         std::fs::set_permissions(&destination, permissions)
     }
 
     fn ensure_parent_exists(self, path: &PathBuf) -> Result<(), Error> {
         let path_parent = path.parent().unwrap();
         if !path_parent.exists() {
-            // debug!("Creating parent directory: {}", path_parent.display());
+            debug!("Creating parent directory: {}", path_parent.display());
             std::fs::create_dir_all(&path_parent)?;
         }
         Ok(())
