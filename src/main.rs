@@ -1,6 +1,6 @@
 use clap::Parser;
 use log::{error, info, warn};
-use plsync::{sync, SyncOptions};
+use plsync::{sync, SyncOptions, SyncMethod};
 use std::env;
 use std::io::{stderr, stdout};
 use std::path::PathBuf;
@@ -36,15 +36,26 @@ struct Parameters {
     #[clap(
         short = 'p',
         long = "parallelism",
-        help = "Allow up to n sync jobs (default is the number of online processors)"
+        help = "Maximum number of sync jobs (0 for number of online processors)",
+        default_value = "0"
     )]
     parallelism: Option<usize>,
 
     #[clap(
         long = "log-level",
-        help = "Set the log level (e.g., info, debug, trace)"
+        help = "Set the log level",
+        default_value = "error",
+        value_parser = clap::builder::PossibleValuesParser::new(["error", "warn", "info", "debug", "trace"]),
     )]
     log_level: Option<String>,
+
+    #[clap(
+        long = "copy-method",
+        help = "Set the copy method",
+        default_value = "serial",
+        value_parser = clap::builder::PossibleValuesParser::new(["serial", "parallel", "mmap"])
+    )]
+    copy_method: Option<String>,
 
     #[clap(value_parser)]
     source: PathBuf,
@@ -94,6 +105,7 @@ fn main() {
         preserve_permissions: !arguments.no_preserve_permissions,
         perform_dry_run: arguments.perform_trial_run,
         parallelism: get_parallelism(&arguments),
+        sync_method: SyncMethod::from_str(arguments.copy_method.as_deref().unwrap_or("serial")),
     };
 
     let stdout = stdout();

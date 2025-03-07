@@ -121,11 +121,38 @@ type SyncDirEntry = DirEntry<((), SyncOutcome)>;
 type SyncWalkDir = WalkDirGeneric<((), SyncOutcome)>;
 
 #[derive(Copy, Clone)]
+pub enum SyncMethod {
+    Serial,
+    Parallel,
+    Mmap,
+}
+
+impl SyncMethod {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "serial" => Self::Serial,
+            "parallel" => Self::Parallel,
+            "mmap" => Self::Mmap,
+            _ => Self::Serial,
+        }
+    }
+
+    pub fn copy_function(self) -> fn(&SyncOptions, &PathBuf, &PathBuf) -> Result<u64, Error> {
+        match self {
+            Self::Serial => SyncOptions::copy_file_serial,
+            Self::Parallel => SyncOptions::copy_file_parallel,
+            Self::Mmap => SyncOptions::copy_file_memmap,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
 pub struct SyncOptions {
     /// Wether to preserve permissions of the source file after the destination is written.
     pub preserve_permissions: bool,
     pub perform_dry_run: bool,
     pub parallelism: usize,
+    pub sync_method: SyncMethod,
 }
 
 impl Default for SyncOptions {
@@ -134,6 +161,7 @@ impl Default for SyncOptions {
             preserve_permissions: true,
             perform_dry_run: false,
             parallelism: 1,
+            sync_method: SyncMethod::Serial,
         }
     }
 }
@@ -337,8 +365,9 @@ impl SyncOptions {
                         error: e,
                     })));
                 }
+                let copy_function = self.sync_method.copy_function();
                 if source_length as usize > CHUNK_SIZE && self.parallelism > 1 {
-                    match self.copy_file_parallel(&source, &destination) {
+                    match copy_function(&self, &source, &destination) {
                         Ok(b) => bytes_copied = b,
                         Err(e) => {
                             return Some(Err(Box::new(FileError {
@@ -401,7 +430,7 @@ impl SyncOptions {
         Ok(())
     }
 
-    fn copy_file_serial(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+    fn copy_file_serial(&self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
         std::fs::copy(&source, &destination).map_err(|e| {
             Error::new(
                 e.kind(),
@@ -415,7 +444,7 @@ impl SyncOptions {
         })
     }
 
-    fn copy_file_memmap(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+    fn copy_file_memmap(&self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
         let source_file = File::open(&source)?;
         let file_len = source_file.metadata()?.len();
         let destination_file = OpenOptions::new()
@@ -451,7 +480,7 @@ impl SyncOptions {
         Ok(file_len)
     }
 
-    fn copy_file_parallel(self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
+    fn copy_file_parallel(&self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
         let source_file = File::open(&source)?;
         let destination_file = File::create(&destination)?;
         let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);

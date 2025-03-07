@@ -25,8 +25,8 @@
                 "--stats",
                 "--parallelism=8",
                 // "--log-level=debug",
-                "/user/Temporal/a/",
-                "/user/Temporal/b/"
+                "/user/Temporal/",
+                "/user/Temporal2/"
             ],
             "cwd": "${workspaceFolder}"
         },
