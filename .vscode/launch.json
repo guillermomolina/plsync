@@ -33,14 +33,14 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug example1",
+            "name": "Debug disk_usage",
             "cargo": {
                 "args": [
                     "build",
-                    "--example=example1",
+                    "--example=disk_usage",
                 ],
                 "filter": {
-                    "name": "example1",
+                    "name": "disk_usage",
                     "kind": "example"
                 }
             },

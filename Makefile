@@ -24,7 +24,7 @@ install:
 	cp target/$(target)/$(prog) ~/bin/$(prog)-$(extension)
 
 example:
-	cargo run --example example1 $(release) .
+	cargo run --example disk_usage $(release) .
 
 all: build test install
  

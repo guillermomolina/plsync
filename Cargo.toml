@@ -25,6 +25,5 @@ filetime = "0.2"
 humansize = "2.1"
 humantime = "2.1"
 memmap2 = "0.9"
-filesize = "0.2"
 
 [dev-dependencies]
