@@ -33,6 +33,25 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug example1",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=example1",
+                ],
+                "filter": {
+                    "name": "example1",
+                    "kind": "example"
+                }
+            },
+            "args": [
+                "${workspaceFolder}"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Debug unit tests in library 'plsync'",
             "cargo": {
                 "args": [
