@@ -1,5 +1,5 @@
 use clap::Parser;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressDrawTarget};
 use log::{error, info, warn};
 use plsync::{sync, SyncOptions};
 use rayon::{ThreadPoolBuildError, ThreadPoolBuilder};
@@ -111,14 +111,15 @@ fn main() {
         perform_dry_run: arguments.perform_trial_run,
     };
 
-    // if arguments.show_progress {
-        let progress_bar = ProgressBar::new(0);
-        progress_bar.set_style(
-            indicatif::ProgressStyle::default_bar()
-                .template("Synced {pos} entries")
-                .unwrap(),
-        ); 
-    // }
+    let progress_bar = ProgressBar::new(0);
+    progress_bar.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("Synced {pos} entries")
+            .unwrap(),
+    ); 
+    if !arguments.show_progress {
+        progress_bar.set_draw_target(ProgressDrawTarget::hidden())
+    }
     let sync_status = sync(source, destination, &options, &progress_bar);
     let errors_total = sync_status.errors_total();
     if arguments.show_stats {

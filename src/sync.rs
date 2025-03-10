@@ -77,7 +77,7 @@ impl SyncStatus {
 
     pub fn print(&self) {
         println!(
-            "Entriess total: {}, copied: {}, skipped: {}, errors: {}, permission errors: {}",
+            "Entries total: {}, copied: {}, skipped: {}, errors: {}, permission errors: {}",
             self.entries_total(),
             self.copied_total(),
             self.skipped_total(),
