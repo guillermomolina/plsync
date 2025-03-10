@@ -111,12 +111,6 @@ impl SyncStatus {
             humansize::format_size(self.bytes_total, humansize::BINARY),
         );
     }
-
-    pub fn reduce_and_print(&self, other: &Self) -> Self {
-        let result = self.reduce(other);
-        result.print();
-        result
-    }
 }
 
 #[derive(Copy, Clone)]
