@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use filetime::FileTime;
 use log::{debug, error, info, warn};
 use std::io::Error;
-use std::io::Write;
 
+use indicatif::{ProgressBar, ParallelProgressIterator};
 use rayon::prelude::*;
 
 // use crate::Throttle;
@@ -58,7 +58,7 @@ impl SyncStatus {
         self.links_total - self.links_copied
     }
 
-    pub fn reduce(&self, other: &Self) -> Self {
+    pub fn merge(&self, other: &Self) -> Self {
         SyncStatus {
             dirs_copied: self.dirs_copied + other.dirs_copied,
             dirs_total: self.dirs_total + other.dirs_total,
@@ -77,7 +77,7 @@ impl SyncStatus {
 
     pub fn print(&self) {
         println!(
-            "Items total: {}, copied: {}, skipped: {}, errors: {}, permission errors: {}",
+            "Entriess total: {}, copied: {}, skipped: {}, errors: {}, permission errors: {}",
             self.entries_total(),
             self.copied_total(),
             self.skipped_total(),
@@ -137,11 +137,10 @@ impl Default for SyncOptions {
 }
 
 pub fn sync(
-    mut _out: impl Write,
-    mut _err: Option<impl Write>,
     source_path: &Path,
     destination_path: &Path,
     options: &SyncOptions,
+    progress_bar: &ProgressBar,
 ) -> SyncStatus {
     if !source_path.is_dir() {
         error!("Source path is not a directory: {}", source_path.display());
@@ -161,10 +160,15 @@ pub fn sync(
             return status;
         }
     }
-    sync_path(source_path, destination_path, options)
+    sync_path(source_path, destination_path, options, &progress_bar)
 }
 
-fn sync_path(source_base: &Path, destination_base: &Path, options: &SyncOptions) -> SyncStatus {
+fn sync_path(
+    source_base: &Path,
+    destination_base: &Path,
+    options: &SyncOptions,
+    progress_bar: &ProgressBar,
+) -> SyncStatus {
     let source_dir = std::fs::read_dir(source_base);
     if source_dir.is_err() {
         let mut status = SyncStatus::default();
@@ -174,6 +178,7 @@ fn sync_path(source_base: &Path, destination_base: &Path, options: &SyncOptions)
     source_dir
         .unwrap()
         .par_bridge()
+        .progress_with(progress_bar.clone())
         .map(|entry| {
             if entry.is_err() {
                 let mut status = SyncStatus::default();
@@ -198,7 +203,12 @@ fn sync_path(source_base: &Path, destination_base: &Path, options: &SyncOptions)
                     destination_path.display()
                 );
                 let status = sync_dir(&source_path, &destination_path, &options, &metadata);
-                status.reduce(&sync_path(&source_path, &destination_path, options))
+                status.merge(&sync_path(
+                    &source_path,
+                    &destination_path,
+                    options,
+                    progress_bar,
+                ))
             } else if metadata.is_symlink() {
                 debug!(
                     "Syncing symlink: {} -> {}",
@@ -215,7 +225,7 @@ fn sync_path(source_base: &Path, destination_base: &Path, options: &SyncOptions)
                 sync_file(&source_path, &destination_path, &options, &metadata)
             }
         })
-        .reduce(|| SyncStatus::default(), |a, b| a.reduce(&b))
+        .reduce(|| SyncStatus::default(), |a, b| a.merge(&b))
 }
 
 fn copy_permissions(metadata: &Metadata, destination: &PathBuf) -> Result<(), Error> {
@@ -432,7 +442,6 @@ fn ensure_parent_exists(path: &PathBuf) -> Result<(), Error> {
     }
     Ok(())
 }
-
 
 fn files_differs(destination: &PathBuf, src_meta: &Metadata) -> Result<bool, Error> {
     if !destination.exists() {

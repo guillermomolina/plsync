@@ -1,9 +1,9 @@
 use clap::Parser;
+use indicatif::ProgressBar;
 use log::{error, info, warn};
 use plsync::{sync, SyncOptions};
 use rayon::{ThreadPoolBuildError, ThreadPoolBuilder};
 use std::env;
-use std::io::{stderr, stdout};
 use std::path::PathBuf;
 use std::process;
 
@@ -81,7 +81,9 @@ fn set_thread_pool(num_threads: usize) -> Result<(), ThreadPoolBuildError> {
     if num_threads == 0 {
         ThreadPoolBuilder::new().build_global()
     } else {
-        ThreadPoolBuilder::new().num_threads(num_threads).build_global()
+        ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
     }
 }
 
@@ -109,10 +111,15 @@ fn main() {
         perform_dry_run: arguments.perform_trial_run,
     };
 
-    let stdout = stdout();
-    let stdout_locked = stdout.lock();
-    let stderr = Some(stderr());
-    let sync_status = sync(stdout_locked, stderr, source, destination, &options);
+    // if arguments.show_progress {
+        let progress_bar = ProgressBar::new(0);
+        progress_bar.set_style(
+            indicatif::ProgressStyle::default_bar()
+                .template("Synced {pos} entries")
+                .unwrap(),
+        ); 
+    // }
+    let sync_status = sync(source, destination, &options, &progress_bar);
     let errors_total = sync_status.errors_total();
     if arguments.show_stats {
         sync_status.print();
