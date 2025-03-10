@@ -150,7 +150,6 @@ pub struct SyncOptions {
     /// Wether to preserve permissions of the source file after the destination is written.
     pub preserve_permissions: bool,
     pub perform_dry_run: bool,
-    pub parallelism: usize,
     pub sync_method: SyncMethod,
 }
 
@@ -159,7 +158,6 @@ impl Default for SyncOptions {
         Self {
             preserve_permissions: true,
             perform_dry_run: false,
-            parallelism: 1,
             sync_method: SyncMethod::Serial,
         }
     }
@@ -571,22 +569,4 @@ fn copy_file_parallel(&self, source: &PathBuf, destination: &PathBuf) -> Result<
     Ok(total_bytes_copied)
 }
 
-fn parallelism(num_threads: usize) -> Parallelism {
-    match num_threads {
-        0 => Parallelism::RayonDefaultPool {
-            busy_timeout: std::time::Duration::from_secs(1),
-        },
-        1 => Parallelism::Serial,
-        n => Parallelism::RayonExistingPool {
-            pool: ThreadPoolBuilder::new()
-                .stack_size(128 * 1024)
-                .num_threads(n)
-                .thread_name(|idx| format!("plsync-thread-{idx}"))
-                .build()
-                .expect("fields we set cannot fail")
-                .into(),
-            busy_timeout: None,
-        },
-    }
-}
  */

@@ -1,6 +1,7 @@
 use clap::Parser;
 use log::{error, info, warn};
 use plsync::{sync, SyncMethod, SyncOptions};
+use rayon::{ThreadPoolBuildError, ThreadPoolBuilder};
 use std::env;
 use std::io::{stderr, stdout};
 use std::path::PathBuf;
@@ -84,6 +85,14 @@ fn get_parallelism(arguments: &Parameters) -> usize {
     }
 }
 
+fn set_thread_pool(num_threads: usize) -> Result<(), ThreadPoolBuildError> {
+    if num_threads == 0 {
+        ThreadPoolBuilder::new().build_global()
+    } else {
+        ThreadPoolBuilder::new().num_threads(num_threads).build_global()
+    }
+}
+
 fn main() {
     let arguments = Parameters::parse();
 
@@ -101,10 +110,11 @@ fn main() {
     }
     let destination = &arguments.destination;
 
+    set_thread_pool(get_parallelism(&arguments)).expect("fields we set cannot fail");
+
     let options = SyncOptions {
         preserve_permissions: !arguments.no_preserve_permissions,
         perform_dry_run: arguments.perform_trial_run,
-        parallelism: get_parallelism(&arguments),
         sync_method: SyncMethod::from_str(arguments.copy_method.as_deref().unwrap_or("serial")),
     };
 
