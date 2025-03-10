@@ -112,6 +112,71 @@ impl SyncStatus {
     pub fn skipped_total(&self) -> u64 {
         self.entries_total() - self.copied_total()
     }
+
+    pub fn dirs_skipped(&self) -> u64 {
+        self.dirs_total - self.dirs_copied
+    }
+
+    pub fn files_skipped(&self) -> u64 {
+        self.files_total - self.files_copied
+    }
+
+    pub fn links_skipped(&self) -> u64 {
+        self.links_total - self.links_copied
+    }
+
+    pub fn reduce(&self, other: &Self) -> Self {
+        SyncStatus {
+            dirs_copied: self.dirs_copied + other.dirs_copied,
+            dirs_total: self.dirs_total + other.dirs_total,
+            dirs_errors: self.dirs_errors + other.dirs_errors,
+            files_copied: self.files_copied + other.files_copied,
+            files_total: self.files_total + other.files_total,
+            files_errors: self.files_errors + other.files_errors,
+            links_copied: self.links_copied + other.links_copied,
+            links_total: self.links_total + other.links_total,
+            links_errors: self.links_errors + other.links_errors,
+            bytes_copied: self.bytes_copied + other.bytes_copied,
+            bytes_total: self.bytes_total + other.bytes_total,
+        }
+    }
+
+    pub fn print(self) {
+        println!(
+            "Items {} total, copied {}, skipped {}, errors {}",
+            self.entries_total(),
+            self.copied_total(),
+            self.skipped_total(),
+            self.errors_total()
+        );
+        println!(
+            "Directories {} total, copied {}, skipped {}, errors {}",
+            self.dirs_total,
+            self.dirs_copied,
+            self.dirs_skipped(),
+            self.dirs_errors
+        );
+        println!(
+            "Symbolic links {} total, copied {}, skipped {}, errors {}",
+            self.links_total,
+            self.links_copied,
+            self.links_skipped(),
+            self.links_errors
+        );
+        println!(
+            "Files {} total, copied {}, skipped {}, errors {}",
+            self.files_total,
+            self.files_copied,
+            self.files_skipped(),
+            self.files_errors
+        );
+        println!(
+            "Transfered {} bytes out of {}",
+            humansize::format_size(self.bytes_copied, humansize::BINARY),
+            humansize::format_size(self.bytes_total, humansize::BINARY),
+        );
+    }
+    
 }
 
 #[derive(Debug, Default)]
@@ -175,7 +240,63 @@ impl Default for SyncOptions {
     }
 }
 
+fn sync_path(source_path: &Path, destination_path: &Path) -> SyncStatus {
+    let source_dir = std::fs::read_dir(source_path);
+    if source_dir.is_err() {
+        let mut status = SyncStatus::default();
+        status.dirs_errors = 1;
+        return status;
+    }
+    source_dir
+        .unwrap()
+        .par_bridge()
+        .map(|entry| {
+            if entry.is_err() {
+                let mut status = SyncStatus::default();
+                status.dirs_errors = 1;
+                return status;
+            }
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let metadata = entry.metadata();
+            if metadata.is_err() {
+                let mut status = SyncStatus::default();
+                status.dirs_errors = 1;
+                return status;
+            }
+            let metadata = metadata.unwrap();
+            if metadata.is_dir() {
+                debug!("Syncing directory: {}", path.display());
+                let mut status = sync_path(&path, destination_path);
+                status.dirs_total += 1;
+                status
+            } else if metadata.is_symlink() {
+                debug!("Syncing symlink: {}", path.display());
+                let mut status = SyncStatus::default();
+                status.links_total = 1;
+                status
+            } else {
+                debug!("Syncing file: {}", path.display());
+                let mut status = SyncStatus::default();
+                status.bytes_total = metadata.len();
+                status.files_total = 1;
+                status
+            }
+        })
+        .reduce(|| SyncStatus::default(), |a, b| a.reduce(&b))
+}
+
 pub fn sync(
+    mut _out: impl Write,
+    mut _err: Option<impl Write>,
+    source_path: &Path,
+    destination_path: &Path,
+    _options: SyncOptions,
+) -> SyncStatus {
+    sync_path(source_path, destination_path)
+}
+
+pub fn sync2(
     mut _out: impl Write,
     mut err: Option<impl Write>,
     source_path: &Path,
@@ -188,7 +309,14 @@ pub fn sync(
     for dir_entry in sync_iterator {
         progress.throttled(|| {
             if let Some(err) = err.as_mut() {
-                write!(err, "Syncing {} items, copied {}, skipped {}\r", status.entries_total(), status.copied_total(), status.skipped_total()).ok();
+                write!(
+                    err,
+                    "Syncing {} items, copied {}, skipped {}\r",
+                    status.entries_total(),
+                    status.copied_total(),
+                    status.skipped_total()
+                )
+                .ok();
             }
         });
         match dir_entry {
@@ -337,7 +465,11 @@ impl SyncOptions {
             }
         }
         if self.perform_dry_run {
-            debug!("Would create symlink: {} -> {}", destination.display(), link.display());
+            debug!(
+                "Would create symlink: {} -> {}",
+                destination.display(),
+                link.display()
+            );
         } else {
             if let Err(e) = self.ensure_parent_exists(&destination) {
                 return Some(Err(Box::new(SymLinkError {
@@ -345,7 +477,11 @@ impl SyncOptions {
                     error: e,
                 })));
             }
-            debug!("Creating symlink: {} -> {}", destination.display(), link.display());
+            debug!(
+                "Creating symlink: {} -> {}",
+                destination.display(),
+                link.display()
+            );
             if let Err(e) = std::os::unix::fs::symlink(&link, &destination) {
                 return Some(Err(Box::new(SymLinkError {
                     path: destination.clone(),
@@ -353,7 +489,11 @@ impl SyncOptions {
                 })));
             }
         }
-        info!("Created symlink: {} -> {}", destination.display(), link.display());
+        info!(
+            "Created symlink: {} -> {}",
+            destination.display(),
+            link.display()
+        );
         Some(Ok(SyncResult::SymLinkCopied))
     }
 
@@ -363,10 +503,18 @@ impl SyncOptions {
         let source_length = source.metadata().unwrap().len();
         if !destination.exists() || files_differs {
             if self.perform_dry_run {
-                debug!("File up to date, no need to copy: {} -> {}", source.display(), destination.display());
+                debug!(
+                    "File up to date, no need to copy: {} -> {}",
+                    source.display(),
+                    destination.display()
+                );
                 Some(Ok(SyncResult::FileCopied(source_length)))
             } else {
-                debug!("Copying file: {} -> {}", source.display(), destination.display());
+                debug!(
+                    "Copying file: {} -> {}",
+                    source.display(),
+                    destination.display()
+                );
                 let bytes_copied;
                 if let Err(e) = self.ensure_parent_exists(&destination) {
                     return Some(Err(Box::new(FileError {
@@ -396,7 +544,11 @@ impl SyncOptions {
                         }
                     }
                 }
-                info!("Copied file: {} -> {}", source.display(), destination.display());
+                info!(
+                    "Copied file: {} -> {}",
+                    source.display(),
+                    destination.display()
+                );
                 Some(Ok(SyncResult::FileCopied(bytes_copied)))
             }
         } else {
@@ -426,7 +578,11 @@ impl SyncOptions {
     fn copy_permissions(self, entry: &SyncDirEntry, destination: &PathBuf) -> Result<(), Error> {
         let metadata = entry.metadata()?;
         let permissions = metadata.permissions();
-        debug!("Setting permissions {:o} on {}", permissions.mode(), destination.display());
+        debug!(
+            "Setting permissions {:o} on {}",
+            permissions.mode(),
+            destination.display()
+        );
         std::fs::set_permissions(&destination, permissions)
     }
 
