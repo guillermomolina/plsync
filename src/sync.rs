@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::fmt;
 use std::fs::Metadata;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -19,61 +18,6 @@ use rayon::prelude::*;
 
 // const BUFFER_SIZE: usize = 128 * 1024;
 // const CHUNK_SIZE: usize = BUFFER_SIZE * 1024;
-
-#[derive(Debug)]
-pub struct DirError {
-    pub path: PathBuf,
-    pub error: Error,
-}
-
-impl fmt::Display for DirError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Failed to process directory {}: {}",
-            self.path.display(),
-            self.error
-        )
-    }
-}
-
-#[derive(Debug)]
-pub struct SymLinkError {
-    pub path: PathBuf,
-    pub error: Error,
-}
-
-impl fmt::Display for SymLinkError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Failed to process symlink {}: {}",
-            self.path.display(),
-            self.error
-        )
-    }
-}
-
-#[derive(Debug)]
-pub struct FileError {
-    pub path: PathBuf,
-    pub error: Error,
-}
-
-impl fmt::Display for FileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Failed to process file {}: {}",
-            self.path.display(),
-            self.error
-        )
-    }
-}
-
-impl std::error::Error for DirError {}
-impl std::error::Error for SymLinkError {}
-impl std::error::Error for FileError {}
 
 #[derive(Clone, Default, Debug)]
 pub struct SyncStatus {
@@ -173,17 +117,6 @@ impl SyncStatus {
             humansize::format_size(self.bytes_total, humansize::BINARY),
         );
     }
-}
-
-#[derive(Debug, Default)]
-pub enum SyncResult {
-    #[default]
-    DirSkipped,
-    DirCopied,
-    SymLinkSkipped,
-    SymLinkCopied,
-    FileSkipped(u64),
-    FileCopied(u64),
 }
 
 #[derive(Copy, Clone)]
