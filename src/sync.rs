@@ -6,18 +6,12 @@ use std::path::PathBuf;
 
 use filetime::FileTime;
 use log::{debug, error, info, warn};
-// use std::fs::File;
 use std::io::Error;
-use std::io::{/*BufReader, BufWriter, Read, */Write};
-// use std::time::Duration;
+use std::io::Write;
 
 use rayon::prelude::*;
-// use memmap2::{Mmap, MmapMut};
 
 // use crate::Throttle;
-
-// const BUFFER_SIZE: usize = 128 * 1024;
-// const CHUNK_SIZE: usize = BUFFER_SIZE * 1024;
 
 #[derive(Clone, Default, Debug)]
 pub struct SyncStatus {
@@ -81,7 +75,7 @@ impl SyncStatus {
         }
     }
 
-    pub fn print(self) {
+    pub fn print(&self) {
         println!(
             "Items total: {}, copied: {}, skipped: {}, errors: {}, permission errors: {}",
             self.entries_total(),
@@ -117,6 +111,12 @@ impl SyncStatus {
             humansize::format_size(self.bytes_total, humansize::BINARY),
         );
     }
+
+    pub fn reduce_and_print(&self, other: &Self) -> Self {
+        let result = self.reduce(other);
+        result.print();
+        result
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -126,31 +126,11 @@ pub enum SyncMethod {
     Mmap,
 }
 
-impl SyncMethod {
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "serial" => Self::Serial,
-            "parallel" => Self::Parallel,
-            "mmap" => Self::Mmap,
-            _ => Self::Serial,
-        }
-    }
-
-    // pub fn copy_function(self) -> fn(&PathBuf, &PathBuf, &SyncOptions, &Metadata) -> Result<u64, Error> {
-    //     match self {
-    //         Self::Serial => copy_file_serial,
-    //         Self::Parallel => copy_file_parallel,
-    //         Self::Mmap => copy_file_memmap,
-    //     }
-    // }
-}
-
 #[derive(Copy, Clone)]
 pub struct SyncOptions {
     /// Wether to preserve permissions of the source file after the destination is written.
     pub preserve_permissions: bool,
     pub perform_dry_run: bool,
-    pub sync_method: SyncMethod,
 }
 
 impl Default for SyncOptions {
@@ -158,7 +138,6 @@ impl Default for SyncOptions {
         Self {
             preserve_permissions: true,
             perform_dry_run: false,
-            sync_method: SyncMethod::Serial,
         }
     }
 }
@@ -476,97 +455,3 @@ fn files_differs(destination: &PathBuf, src_meta: &Metadata) -> Result<bool, Err
 
     Ok(src_mtime > dest_mtime || src_size != dest_size)
 }
-
-
-/*
-fn copy_file_serial(&self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
-    std::fs::copy(&source, &destination).map_err(|e| {
-        Error::new(
-            e.kind(),
-            format!(
-                "Failed to copy file: {} -> {}: {}",
-                source.display(),
-                destination.display(),
-                e
-            ),
-        )
-    })
-}
-
-fn copy_file_memmap(source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
-    let source_file = File::open(&source)?;
-    let file_len = source_file.metadata()?.len();
-    let destination_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&destination)?;
-    destination_file.set_len(file_len)?;
-    let source = unsafe { Mmap::map(&source_file)? };
-    let mut dest = unsafe { MmapMut::map_mut(&destination_file)? };
-
-    let pool = ThreadPoolBuilder::new()
-        .num_threads(self.parallelism)
-        .build()
-        .unwrap();
-
-    pool.install(|| {
-        dest.par_chunks_mut(CHUNK_SIZE)
-            .zip(source.par_chunks(CHUNK_SIZE))
-            .for_each(|(dest_chunk, source_chunk)| dest_chunk.copy_from_slice(source_chunk));
-    });
-
-    dest.flush()?;
-
-    if dest.len() as u64 != file_len {
-        return Err(Error::new(
-            std::io::ErrorKind::Other,
-            "Copied length mismatch",
-        ));
-    }
-
-    Ok(file_len)
-}
-
-fn copy_file_parallel(&self, source: &PathBuf, destination: &PathBuf) -> Result<u64, Error> {
-    let source_file = File::open(&source)?;
-    let destination_file = File::create(&destination)?;
-    let mut reader = BufReader::with_capacity(BUFFER_SIZE, source_file);
-    let mut writer = BufWriter::with_capacity(BUFFER_SIZE, destination_file);
-
-    let mut buffer = vec![0; CHUNK_SIZE];
-    let mut total_bytes_copied = 0;
-    let source_metadata = source.metadata()?;
-
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        let chunks: Vec<_> = buffer[..bytes_read]
-            .par_chunks(CHUNK_SIZE)
-            .with_min_len(self.parallelism)
-            .map(|chunk| chunk.to_vec())
-            .collect();
-
-        for chunk in chunks {
-            writer.write_all(&chunk)?;
-            let bytes_copied = chunk.len() as u64;
-            total_bytes_copied += bytes_copied;
-            // debug!("Copied chunk {}/{} from {} to {}", humansize::format_size(total_bytes_copied, humansize::BINARY), humansize::format_size(file_len, humansize::BINARY), source.display(), destination.display());
-        }
-    }
-    writer.flush()?;
-    #[cfg(unix)]
-    {
-        if self.preserve_permissions {
-            let permissions = source_metadata.permissions();
-            std::fs::set_permissions(&destination, permissions)?;
-        }
-    }
-    Ok(total_bytes_copied)
-}
-
- */
