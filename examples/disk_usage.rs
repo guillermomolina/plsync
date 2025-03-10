@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 // fn burrow(dir: &Path) -> Vec<PathBuf> {
 //     std::fs::read_dir(dir)

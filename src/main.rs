@@ -111,7 +111,7 @@ fn main() {
     let stdout = stdout();
     let stdout_locked = stdout.lock();
     let stderr = Some(stderr());
-    let sync_status = sync(stdout_locked, stderr, source, destination, options);
+    let sync_status = sync(stdout_locked, stderr, source, destination, &options);
     let errors_total = sync_status.errors_total();
     if arguments.show_stats {
         sync_status.print();
