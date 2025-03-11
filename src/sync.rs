@@ -14,12 +14,15 @@ pub struct SyncStatus {
     pub dirs_copied: u64,
     pub dirs_total: u64,
     pub dirs_errors: u64,
+    pub dirs_deleted: u64,
     pub files_copied: u64,
     pub files_total: u64,
     pub files_errors: u64,
+    pub files_deleted: u64,
     pub links_copied: u64,
     pub links_total: u64,
     pub links_errors: u64,
+    pub links_deleted: u64,
     pub permissions_errors: u64,
     pub bytes_copied: u64,
     pub bytes_total: u64,
@@ -36,6 +39,10 @@ impl SyncStatus {
 
     pub fn copied_total(&self) -> u64 {
         self.dirs_copied + self.files_copied + self.links_copied
+    }
+
+    pub fn deleted_total(&self) -> u64 {
+        self.dirs_deleted + self.files_deleted + self.links_deleted
     }
 
     pub fn skipped_total(&self) -> u64 {
@@ -59,12 +66,15 @@ impl SyncStatus {
             dirs_copied: self.dirs_copied + other.dirs_copied,
             dirs_total: self.dirs_total + other.dirs_total,
             dirs_errors: self.dirs_errors + other.dirs_errors,
+            dirs_deleted: self.dirs_deleted + other.dirs_deleted,
             files_copied: self.files_copied + other.files_copied,
             files_total: self.files_total + other.files_total,
             files_errors: self.files_errors + other.files_errors,
+            files_deleted: self.files_deleted + other.files_deleted,
             links_copied: self.links_copied + other.links_copied,
             links_total: self.links_total + other.links_total,
             links_errors: self.links_errors + other.links_errors,
+            links_deleted: self.links_deleted + other.links_deleted,
             permissions_errors: self.permissions_errors + other.permissions_errors,
             bytes_copied: self.bytes_copied + other.bytes_copied,
             bytes_total: self.bytes_total + other.bytes_total,
@@ -73,32 +83,36 @@ impl SyncStatus {
 
     pub fn print(&self) {
         println!(
-            "Entries total: {}, copied: {}, skipped: {}, errors: {}, permission errors: {}",
+            "Entries total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}, permission errors: {}",
             self.entries_total(),
             self.copied_total(),
             self.skipped_total(),
+            self.deleted_total(),
             self.errors_total(),
             self.permissions_errors
         );
         println!(
-            "Directories total: {}, copied: {}, skipped: {}, errors: {}",
+            "Directories total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}",
             self.dirs_total,
             self.dirs_copied,
             self.dirs_skipped(),
+            self.dirs_deleted,
             self.dirs_errors
         );
         println!(
-            "Symbolic links total: {}, copied: {}, skipped: {}, errors: {}",
+            "Symbolic links total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}",
             self.links_total,
             self.links_copied,
             self.links_skipped(),
+            self.links_deleted,
             self.links_errors
         );
         println!(
-            "Files total: {}, copied: {}, skipped: {}, errors: {}",
+            "Files total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}",
             self.files_total,
             self.files_copied,
             self.files_skipped(),
+            self.files_deleted,
             self.files_errors
         );
         println!(
@@ -158,7 +172,11 @@ pub fn sync(
             return status;
         }
     }
-    sync_path(source_path, destination_path, options, &progress_bar)
+    let mut status = sync_path(source_path, destination_path, options, &progress_bar);
+    if options.delete {
+        status = delete_path(destination_path, source_path, options, progress_bar).merge(&status);
+    }
+    status
 }
 
 fn sync_path(
@@ -201,12 +219,7 @@ fn sync_path(
                     destination_path.display()
                 );
                 let status = sync_dir(&source_path, &destination_path, &options, &metadata);
-                status.merge(&sync_path(
-                    &source_path,
-                    &destination_path,
-                    options,
-                    progress_bar,
-                ))
+                sync_path(&source_path, &destination_path, options, progress_bar).merge(&status)
             } else if metadata.is_symlink() {
                 debug!(
                     "Syncing symlink: {} -> {}",
@@ -221,6 +234,67 @@ fn sync_path(
                     destination_path.display()
                 );
                 sync_file(&source_path, &destination_path, &options, &metadata)
+            }
+        })
+        .reduce(|| SyncStatus::default(), |a, b| a.merge(&b))
+}
+
+fn delete_path(
+    source_base: &Path,
+    destination_base: &Path,
+    options: &SyncOptions,
+    progress_bar: &ProgressBar,
+) -> SyncStatus {
+    let source_dir = std::fs::read_dir(source_base);
+    if source_dir.is_err() {
+        let mut status = SyncStatus::default();
+        status.permissions_errors = 1;
+        return status;
+    }
+    source_dir
+        .unwrap()
+        .par_bridge()
+        .progress_with(progress_bar.clone())
+        .map(|entry| {
+            if entry.is_err() {
+                let mut status = SyncStatus::default();
+                status.permissions_errors = 1;
+                return status;
+            }
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let metadata = entry.metadata();
+            if metadata.is_err() {
+                let mut status = SyncStatus::default();
+                status.dirs_errors = 1;
+                return status;
+            }
+            let metadata = metadata.unwrap();
+            let source_relative = source_path.strip_prefix(&*source_base).unwrap();
+            let destination_path = destination_base.join(&source_relative);
+            if metadata.is_dir() {
+                debug!(
+                    "Syncing absent directory: {} -> {}",
+                    source_path.display(),
+                    destination_path.display()
+                );
+                let mut status =
+                    delete_path(&source_path, &destination_path, options, progress_bar);
+                if !destination_path.exists() {
+                    status = delete_dir(&source_path, &options).merge(&status);
+                }
+                status
+            } else {
+                debug!(
+                    "Syncing absent file: {} -> {}",
+                    source_path.display(),
+                    destination_path.display()
+                );
+                if !destination_path.exists() {
+                    delete_file_or_link(&source_path, &options, &metadata)
+                } else {
+                    SyncStatus::default()
+                }
             }
         })
         .reduce(|| SyncStatus::default(), |a, b| a.merge(&b))
@@ -276,6 +350,23 @@ fn sync_dir(
             }
         }
     }
+    status
+}
+
+fn delete_dir(source: &PathBuf, options: &SyncOptions) -> SyncStatus {
+    let mut status = SyncStatus::default();
+    status.dirs_deleted = 1;
+    if options.perform_dry_run {
+        debug!("Would delete directory: {}", source.display());
+    } else {
+        debug!("Deleting directory: {}", source.display());
+        if let Err(e) = std::fs::remove_dir(&source) {
+            status.dirs_errors = 1;
+            error!("Failed to delete directory: {}, {}", source.display(), e);
+            return status;
+        }
+    }
+    info!("Deleted directory: {}", source.display());
     status
 }
 
@@ -387,15 +478,6 @@ fn sync_file(
             return status;
         }
     }
-
-    if options.perform_dry_run {
-        debug!(
-            "File up to date, no need to copy: {} -> {}",
-            source.display(),
-            destination.display()
-        );
-        return status;
-    }
     debug!(
         "Copying file: {} -> {}",
         source.display(),
@@ -410,26 +492,67 @@ fn sync_file(
         status.files_errors = 1;
         return status;
     }
-    let bytes_copied = std::fs::copy(&source, &destination);
-    if bytes_copied.is_err() {
-        error!(
-            "Failed to copy file: {} -> {}, {}",
+
+    let bytes_copied = if options.perform_dry_run {
+        debug!(
+            "Would copy: {} -> {}",
             source.display(),
-            destination.display(),
-            bytes_copied.unwrap_err()
+            destination.display()
         );
-        status.files_errors = 1;
-        return status;
-    }
-    let bytes_copied = bytes_copied.unwrap();
-    info!(
-        "Copied file: {} -> {}",
-        source.display(),
-        destination.display()
-    );
+        source_length
+    } else {
+        let copy_outcome = std::fs::copy(&source, &destination);
+        if copy_outcome.is_err() {
+            error!(
+                "Failed to copy file: {} -> {}, {}",
+                source.display(),
+                destination.display(),
+                copy_outcome.unwrap_err()
+            );
+            status.files_errors = 1;
+            return status;
+        }
+        info!(
+            "Copied file: {} -> {}",
+            source.display(),
+            destination.display()
+        );
+        copy_outcome.unwrap()
+    };
     status.bytes_copied = bytes_copied;
     status.files_copied = 1;
     return status;
+}
+
+fn delete_file_or_link(source: &PathBuf, options: &SyncOptions, metadata: &Metadata) -> SyncStatus {
+    let mut status = SyncStatus::default();
+    let file_type = if metadata.is_symlink() {
+        "symlink"
+    } else {
+        "file"
+    };
+    if metadata.is_symlink() {
+        status.links_deleted = 1;
+    } else {
+        status.files_deleted = 1;
+    }
+    if options.perform_dry_run {
+        debug!("Would delete {}: {}", file_type, source.display());
+    } else {
+        debug!("Deleting {}: {}", file_type, source.display());
+        if let Err(e) = std::fs::remove_file(&source) {
+            status.links_errors = 1;
+            error!(
+                "Failed to delete {}: {}, {}",
+                file_type,
+                source.display(),
+                e
+            );
+            return status;
+        }
+    }
+    info!("Deleted {}: {}", file_type, source.display());
+    status
 }
 
 fn ensure_parent_exists(path: &PathBuf) -> Result<(), Error> {
