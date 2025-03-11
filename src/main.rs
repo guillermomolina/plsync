@@ -1,5 +1,5 @@
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressDrawTarget};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use log::{error, info, warn};
 use plsync::{sync, SyncOptions};
 use rayon::{ThreadPoolBuildError, ThreadPoolBuilder};
@@ -18,9 +18,6 @@ struct Parameters {
     )]
     no_preserve_permissions: bool,
 
-    #[clap(long = "err-list", help = "Write errors to the given file")]
-    error_list_path: Option<PathBuf>,
-
     #[clap(
         short = 'n',
         long = "dry-run",
@@ -33,6 +30,9 @@ struct Parameters {
 
     #[clap(long = "stats", help = "Give some file-transfer stats")]
     show_stats: bool,
+
+    #[clap(long = "delete", help = "Delete extraneous files from dest dirs")]
+    delete: bool,
 
     #[clap(
         short = 'p',
@@ -109,14 +109,15 @@ fn main() {
     let options = SyncOptions {
         preserve_permissions: !arguments.no_preserve_permissions,
         perform_dry_run: arguments.perform_trial_run,
+        delete: arguments.delete,
     };
 
     let progress_bar = ProgressBar::new(0);
     progress_bar.set_style(
-        indicatif::ProgressStyle::default_bar()
-            .template("Synced {pos} entries")
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] Synced {pos} entries at {per_sec}")
             .unwrap(),
-    ); 
+    );
     if !arguments.show_progress {
         progress_bar.set_draw_target(ProgressDrawTarget::hidden())
     }

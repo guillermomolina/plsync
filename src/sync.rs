@@ -125,6 +125,7 @@ pub struct SyncOptions {
     /// Wether to preserve permissions of the source file after the destination is written.
     pub preserve_permissions: bool,
     pub perform_dry_run: bool,
+    pub delete: bool,
 }
 
 impl Default for SyncOptions {
@@ -132,6 +133,7 @@ impl Default for SyncOptions {
         Self {
             preserve_permissions: true,
             perform_dry_run: false,
+            delete: false,
         }
     }
 }
