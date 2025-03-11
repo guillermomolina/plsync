@@ -23,11 +23,7 @@ test:
 install:
 	cp target/$(target)/$(prog) ~/bin/$(prog)-$(extension)
 
-example:
-	cargo run --example disk_usage $(release) .
-
 all: build test install
  
 help:
 	@echo "usage: make $(prog) [debug=1]"
-	@echo "       make example [debug=1]"

@@ -33,25 +33,6 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug disk_usage",
-            "cargo": {
-                "args": [
-                    "build",
-                    "--example=disk_usage",
-                ],
-                "filter": {
-                    "name": "disk_usage",
-                    "kind": "example"
-                }
-            },
-            "args": [
-                "${workspaceFolder}"
-            ],
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
             "name": "Debug unit tests in library 'plsync'",
             "cargo": {
                 "args": [
