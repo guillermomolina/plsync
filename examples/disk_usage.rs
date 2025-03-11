@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
-
+use indicatif::HumanBytes;
 use rayon::iter::{ParallelBridge, ParallelIterator};
+use std::path::{Path, PathBuf};
 
 // fn burrow(dir: &Path) -> Vec<PathBuf> {
 //     std::fs::read_dir(dir)
@@ -68,6 +68,6 @@ fn main() {
         "Total dirs: {}, files: {}, disk usage: {}",
         status.dirs,
         status.files,
-        humansize::format_size(status.size, humansize::BINARY)
+        HumanBytes(status.size)
     );
 }

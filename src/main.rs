@@ -1,9 +1,10 @@
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use log::{error, info, warn};
-use plsync::{sync, SyncOptions};
+use plsync::{sync, DecimalCount, SyncOptions};
 use rayon::{ThreadPoolBuildError, ThreadPoolBuilder};
 use std::env;
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::process;
 
@@ -115,13 +116,21 @@ fn main() {
     let progress_bar = ProgressBar::new(0);
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] Synced {pos} entries at {per_sec}")
-            .unwrap(),
+            .template("[{elapsed_precise}] Synced {pos} entries at {per_sec_round}")
+            .unwrap()
+            .with_key(
+                "per_sec_round",
+                |state: &ProgressState, w: &mut dyn Write| {
+                    write!(w, "{}/s", DecimalCount(state.per_sec())).unwrap()
+                },
+            ),
     );
     if !arguments.show_progress {
         progress_bar.set_draw_target(ProgressDrawTarget::hidden())
     }
     let sync_status = sync(source, destination, &options, &progress_bar);
+    progress_bar.finish_and_clear();
+    
     let errors_total = sync_status.errors_total();
     if arguments.show_stats {
         sync_status.print();

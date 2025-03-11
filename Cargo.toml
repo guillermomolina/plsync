@@ -22,8 +22,7 @@ clap = { version = "4.4", features = ["derive"] }
 log = "0.4"
 env_logger = "0.9"
 filetime = "0.2"
-humansize = "2.1"
-humantime = "2.1"
 indicatif = { version = "0.17", features = ["rayon"] }
+number_prefix = "0.4"
 
 [dev-dependencies]

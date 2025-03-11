@@ -1,17 +1,13 @@
+use filetime::FileTime;
+use indicatif::{HumanBytes, ParallelProgressIterator, ProgressBar};
+use log::{debug, error, info, warn};
+use rayon::prelude::*;
 use std::any::Any;
 use std::fs::Metadata;
+use std::io::Error;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-
-use filetime::FileTime;
-use log::{debug, error, info, warn};
-use std::io::Error;
-
-use indicatif::{ProgressBar, ParallelProgressIterator};
-use rayon::prelude::*;
-
-// use crate::Throttle;
 
 #[derive(Clone, Default, Debug)]
 pub struct SyncStatus {
@@ -107,8 +103,8 @@ impl SyncStatus {
         );
         println!(
             "Transfered {} bytes out of {}",
-            humansize::format_size(self.bytes_copied, humansize::BINARY),
-            humansize::format_size(self.bytes_total, humansize::BINARY),
+            HumanBytes(self.bytes_copied),
+            HumanBytes(self.bytes_total),
         );
     }
 }
