@@ -128,12 +128,13 @@ fn main() {
     if !arguments.show_progress {
         progress_bar.set_draw_target(ProgressDrawTarget::hidden())
     }
+    let start_time = std::time::Instant::now();
     let sync_status = sync(source, destination, &options, &progress_bar);
     progress_bar.finish_and_clear();
     
     let errors_total = sync_status.errors_total();
     if arguments.show_stats {
-        sync_status.print();
+        sync_status.print_elapsed(&start_time);
     }
     if errors_total > 0 {
         process::exit(1);

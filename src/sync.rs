@@ -1,5 +1,5 @@
 use filetime::FileTime;
-use indicatif::{HumanBytes, ParallelProgressIterator, ProgressBar};
+use indicatif::{HumanBytes, HumanDuration, ParallelProgressIterator, ProgressBar};
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
 use std::any::Any;
@@ -61,6 +61,34 @@ impl SyncStatus {
         self.links_total - self.links_copied
     }
 
+    pub fn bytes_skipped(&self) -> u64 {
+        self.bytes_total - self.bytes_copied
+    }
+
+    pub fn bandwidth_total(&self, elapsed: &std::time::Duration) -> u64 {
+        let elapsed = elapsed.as_secs_f64();
+        if elapsed == 0.0 {
+            return 0;
+        }
+        (self.bytes_total as f64 / elapsed) as u64
+    }
+
+    pub fn bandwidth_copied(&self, elapsed: &std::time::Duration) -> u64 {
+        let elapsed = elapsed.as_secs_f64();
+        if elapsed == 0.0 {
+            return 0;
+        }
+        (self.bytes_copied as f64 / elapsed) as u64
+    }
+
+    pub fn bandwidth_skipped(&self, elapsed: &std::time::Duration) -> u64 {
+        let elapsed = elapsed.as_secs_f64();
+        if elapsed == 0.0 {
+            return 0;
+        }
+        (self.bytes_skipped() as f64 / elapsed) as u64
+    }
+
     pub fn merge(&self, other: &Self) -> Self {
         SyncStatus {
             dirs_copied: self.dirs_copied + other.dirs_copied,
@@ -116,9 +144,22 @@ impl SyncStatus {
             self.files_errors
         );
         println!(
-            "Transfered {} bytes out of {}",
-            HumanBytes(self.bytes_copied),
+            "Transfered toal: {}, copied {}, skipped: {}",
             HumanBytes(self.bytes_total),
+            HumanBytes(self.bytes_copied),
+            HumanBytes(self.bytes_skipped()),
+        );
+    }
+
+    pub fn print_elapsed(&self, start_time: &std::time::Instant) {
+        let elapsed = start_time.elapsed();
+        println!("Elapsed time: {}", HumanDuration(elapsed));
+        self.print();
+        println!(
+            "bandwidth toal: {}/s, copied {}/s, skipped: {}/s",
+            HumanBytes(self.bandwidth_total(&elapsed)),
+            HumanBytes(self.bandwidth_copied(&elapsed)),
+            HumanBytes(self.bandwidth_skipped(&elapsed)),
         );
     }
 }
