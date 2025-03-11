@@ -11,7 +11,7 @@ use std::process;
 const MAX_PARALLELISM: usize = 64;
 
 #[derive(Debug, Parser)]
-#[clap(name = "plsync")]
+#[clap(name = "plsync", version = "0.1.0")]
 struct Parameters {
     #[clap(
         long = "no-perms",
