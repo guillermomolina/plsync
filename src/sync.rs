@@ -1,5 +1,5 @@
 use filetime::FileTime;
-use indicatif::{HumanBytes, FormattedDuration, ParallelProgressIterator, ProgressBar};
+use indicatif::{HumanBytes, FormattedDuration, ParallelProgressIterator, ProgressBar, HumanFloatCount};
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
 use std::any::Any;
@@ -112,36 +112,36 @@ impl SyncStatus {
     pub fn print(&self) {
         println!(
             "Entries total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}, permission errors: {}",
-            self.entries_total(),
-            self.copied_total(),
-            self.skipped_total(),
-            self.deleted_total(),
-            self.errors_total(),
-            self.permissions_errors
+            HumanFloatCount(self.entries_total() as f64),
+            HumanFloatCount(self.copied_total() as f64),
+            HumanFloatCount(self.skipped_total() as f64),
+            HumanFloatCount(self.deleted_total() as f64),
+            HumanFloatCount(self.errors_total() as f64),
+            HumanFloatCount(self.permissions_errors as f64)
         );
         println!(
             "Directories total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}",
-            self.dirs_total,
-            self.dirs_copied,
-            self.dirs_skipped(),
-            self.dirs_deleted,
-            self.dirs_errors
+            HumanFloatCount(self.dirs_total as f64),
+            HumanFloatCount(self.dirs_copied as f64),
+            HumanFloatCount(self.dirs_skipped() as f64),
+            HumanFloatCount(self.dirs_deleted as f64),
+            HumanFloatCount(self.dirs_errors as f64)
         );
         println!(
             "Symbolic links total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}",
-            self.links_total,
-            self.links_copied,
-            self.links_skipped(),
-            self.links_deleted,
-            self.links_errors
+            HumanFloatCount(self.links_total as f64),
+            HumanFloatCount(self.links_copied as f64),
+            HumanFloatCount(self.links_skipped() as f64),
+            HumanFloatCount(self.links_deleted as f64),
+            HumanFloatCount(self.links_errors as f64)
         );
         println!(
             "Files total: {}, copied: {}, skipped: {}, deleted: {}, errors: {}",
-            self.files_total,
-            self.files_copied,
-            self.files_skipped(),
-            self.files_deleted,
-            self.files_errors
+            HumanFloatCount(self.files_total as f64),
+            HumanFloatCount(self.files_copied as f64),
+            HumanFloatCount(self.files_skipped() as f64),
+            HumanFloatCount(self.files_deleted as f64),
+            HumanFloatCount(self.files_errors as f64)
         );
         println!(
             "Transfered toal: {}, copied {}, skipped: {}",

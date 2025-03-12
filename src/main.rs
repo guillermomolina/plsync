@@ -116,12 +116,18 @@ fn main() {
     let progress_bar = ProgressBar::new(0);
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] Synced {pos} entries at {per_sec_round}")
+            .template("[{elapsed_precise}] Synced {pos}entries at {per_sec}entries/sec")
             .unwrap()
             .with_key(
-                "per_sec_round",
+                "pos",
                 |state: &ProgressState, w: &mut dyn Write| {
-                    write!(w, "{}/s", DecimalCount(state.per_sec())).unwrap()
+                    write!(w, "{}", DecimalCount(state.pos() as f64)).unwrap()
+                },
+            )
+            .with_key(
+                "per_sec",
+                |state: &ProgressState, w: &mut dyn Write| {
+                    write!(w, "{}", DecimalCount(state.per_sec())).unwrap()
                 },
             ),
     );
