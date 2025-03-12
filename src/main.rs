@@ -114,9 +114,10 @@ fn main() {
     };
 
     let progress_bar = ProgressBar::new(0);
+    progress_bar.set_message("Copy phase");
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] Synced {pos}entries at {per_sec}entries/sec")
+            .template("[{elapsed_precise}] Enumerating {pos}entries at {per_sec}entries/sec [{msg}]")
             .unwrap()
             .with_key(
                 "pos",

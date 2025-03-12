@@ -215,6 +215,8 @@ pub fn sync(
     }
     let mut status = sync_path(source_path, destination_path, options, &progress_bar);
     if options.delete {
+        progress_bar.set_message("Delete phase");
+        progress_bar.set_position(0);
         status = delete_path(destination_path, source_path, options, progress_bar).merge(&status);
     }
     status
