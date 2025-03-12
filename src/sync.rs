@@ -1,5 +1,7 @@
 use filetime::FileTime;
-use indicatif::{HumanBytes, FormattedDuration, ParallelProgressIterator, ProgressBar, HumanFloatCount};
+use indicatif::{
+    FormattedDuration, HumanBytes, HumanFloatCount, ParallelProgressIterator, ProgressBar,
+};
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
 use std::any::Any;
@@ -177,6 +179,8 @@ pub struct SyncOptions {
     pub preserve_permissions: bool,
     pub perform_dry_run: bool,
     pub delete: bool,
+    pub delete_before: bool,
+    pub delete_after: bool,
 }
 
 impl Default for SyncOptions {
@@ -185,6 +189,8 @@ impl Default for SyncOptions {
             preserve_permissions: true,
             perform_dry_run: false,
             delete: false,
+            delete_before: false,
+            delete_after: false,
         }
     }
 }
@@ -213,9 +219,19 @@ pub fn sync(
             return status;
         }
     }
-    let mut status = sync_path(source_path, destination_path, options, &progress_bar);
+    let mut status = SyncStatus::default();
+    if options.delete_before {
+        progress_bar.set_message("Delete before phase");
+        status = delete_path(destination_path, source_path, options, progress_bar).merge(&status);
+        progress_bar.set_message("Copy phase");
+        progress_bar.set_position(0);
+    }
     if options.delete {
-        progress_bar.set_message("Delete phase");
+        progress_bar.set_message("Copy and delete phase");
+    }
+    sync_path(source_path, destination_path, options, &progress_bar).merge(&status);
+    if options.delete_after {
+        progress_bar.set_message("Delete after phase");
         progress_bar.set_position(0);
         status = delete_path(destination_path, source_path, options, progress_bar).merge(&status);
     }

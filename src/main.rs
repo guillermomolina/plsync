@@ -32,8 +32,24 @@ struct Parameters {
     #[clap(long = "stats", help = "Give some file-transfer stats")]
     show_stats: bool,
 
-    #[clap(long = "delete", help = "Delete extraneous files from dest dirs")]
+    #[clap(
+        long = "delete",
+        alias = "delete-during",
+        help = "Delete extraneous files from dest dirs"
+    )]
     delete: bool,
+
+    #[clap(
+        long = "delete-before",
+        help = "receiver deletes before xfer, not during"
+    )]
+    delete_before: bool,
+
+    #[clap(
+        long = "delete-after",
+        help = "Receiver deletes after transfer, not during"
+    )]
+    delete_after: bool,
 
     #[clap(
         short = 'p',
@@ -111,26 +127,24 @@ fn main() {
         preserve_permissions: !arguments.no_preserve_permissions,
         perform_dry_run: arguments.perform_trial_run,
         delete: arguments.delete,
+        delete_before: arguments.delete_before,
+        delete_after: arguments.delete_after,
     };
 
     let progress_bar = ProgressBar::new(0);
     progress_bar.set_message("Copy phase");
     progress_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] Enumerating {pos}entries at {per_sec}entries/sec [{msg}]")
-            .unwrap()
-            .with_key(
-                "pos",
-                |state: &ProgressState, w: &mut dyn Write| {
-                    write!(w, "{}", DecimalCount(state.pos() as f64)).unwrap()
-                },
+            .template(
+                "[{elapsed_precise}] Enumerating {pos}entries at {per_sec}entries/sec [{msg}]",
             )
-            .with_key(
-                "per_sec",
-                |state: &ProgressState, w: &mut dyn Write| {
-                    write!(w, "{}", DecimalCount(state.per_sec())).unwrap()
-                },
-            ),
+            .unwrap()
+            .with_key("pos", |state: &ProgressState, w: &mut dyn Write| {
+                write!(w, "{}", DecimalCount(state.pos() as f64)).unwrap()
+            })
+            .with_key("per_sec", |state: &ProgressState, w: &mut dyn Write| {
+                write!(w, "{}", DecimalCount(state.per_sec())).unwrap()
+            }),
     );
     if !arguments.show_progress {
         progress_bar.set_draw_target(ProgressDrawTarget::hidden())
@@ -138,7 +152,7 @@ fn main() {
     let start_time = std::time::Instant::now();
     let sync_status = sync(source, destination, &options, &progress_bar);
     progress_bar.finish_and_clear();
-    
+
     let errors_total = sync_status.errors_total();
     if arguments.show_stats {
         sync_status.print_elapsed(&start_time);

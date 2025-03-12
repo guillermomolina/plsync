@@ -4,6 +4,8 @@
 - Change progress message
 - Fix --version parameter
 - Add time and bandwidth to stats
+- Add --delete-after parameter
+- Add --delete-before parameter
 
 
 # v0.0.1
