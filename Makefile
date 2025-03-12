@@ -24,6 +24,11 @@ install:
 	cp target/$(target)/$(prog) ~/bin/$(prog)-$(extension)
 
 all: build test install
- 
+
+docker:
+	docker build -t plsync .
+
+.PHONY: all build test install docker help
+
 help:
 	@echo "usage: make $(prog) [debug=1]"
