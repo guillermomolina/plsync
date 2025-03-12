@@ -1,5 +1,5 @@
 use filetime::FileTime;
-use indicatif::{HumanBytes, HumanDuration, ParallelProgressIterator, ProgressBar};
+use indicatif::{HumanBytes, FormattedDuration, ParallelProgressIterator, ProgressBar};
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
 use std::any::Any;
@@ -153,7 +153,7 @@ impl SyncStatus {
 
     pub fn print_elapsed(&self, start_time: &std::time::Instant) {
         let elapsed = start_time.elapsed();
-        println!("Elapsed time: {}", HumanDuration(elapsed));
+        println!("Elapsed time: {}", FormattedDuration(elapsed));
         self.print();
         println!(
             "bandwidth toal: {}/s, copied {}/s, skipped: {}/s",
