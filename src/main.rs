@@ -106,6 +106,10 @@ fn set_thread_pool(num_threads: usize) -> Result<(), ThreadPoolBuildError> {
 
 fn main() {
     let arguments = Parameters::parse();
+    if arguments.delete {
+        eprintln!("Delete inline (--delete) is not yet implemented, use --delete-after or --delete-before instead.");
+        process::exit(1);
+    }
 
     // Set log level based on command-line argument or environment variable
     if let Some(log_level) = &arguments.log_level {
