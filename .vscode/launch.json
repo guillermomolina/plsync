@@ -25,6 +25,7 @@
                 "--stats",
                 "--parallelism=8",
                 "--log-level=warn",
+                "--exclude=**/a",
                 "/user/Temporal/",
                 "/user/Temporal2/"
             ],

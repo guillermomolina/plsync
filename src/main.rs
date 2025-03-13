@@ -35,13 +35,13 @@ struct Parameters {
     #[clap(
         long = "delete",
         alias = "delete-during",
-        help = "Delete extraneous files from dest dirs"
+        help = "Delete extraneous files from dest dirs (not yet implemented)"
     )]
     delete: bool,
 
     #[clap(
         long = "delete-before",
-        help = "receiver deletes before xfer, not during"
+        help = "Receiver deletes before xfer, not during"
     )]
     delete_before: bool,
 
@@ -66,6 +66,13 @@ struct Parameters {
         value_parser = clap::builder::PossibleValuesParser::new(["error", "warn", "info", "debug", "trace"]),
     )]
     log_level: Option<String>,
+
+    #[clap(
+        long = "exclude",
+        help = "Exclude files matching EXCLUDE",
+        num_args = 1..,
+    )]
+    exclude: Vec<String>,
 
     #[clap(value_parser)]
     source: PathBuf,
@@ -133,6 +140,7 @@ fn main() {
         delete: arguments.delete,
         delete_before: arguments.delete_before,
         delete_after: arguments.delete_after,
+        exclude: arguments.exclude.clone(),
     };
 
     let progress_bar = ProgressBar::new(0);

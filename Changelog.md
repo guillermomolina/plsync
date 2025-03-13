@@ -1,3 +1,8 @@
+# v0.2.0
+
+- Add --exclude parameter and functionality
+
+
 # v0.1.0
 
 - Change progress message

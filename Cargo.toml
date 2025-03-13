@@ -24,5 +24,7 @@ env_logger = "0.9"
 filetime = "0.2"
 indicatif = { version = "0.17", features = ["rayon"] }
 number_prefix = "0.4"
+glob-match ="0.2"
+# regex = "1.5"
 
 [dev-dependencies]

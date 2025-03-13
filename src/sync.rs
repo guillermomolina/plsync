@@ -1,4 +1,5 @@
 use filetime::FileTime;
+use glob_match::glob_match;
 use indicatif::{
     FormattedDuration, HumanBytes, HumanFloatCount, ParallelProgressIterator, ProgressBar,
 };
@@ -166,21 +167,13 @@ impl SyncStatus {
     }
 }
 
-#[derive(Copy, Clone)]
-pub enum SyncMethod {
-    Serial,
-    Parallel,
-    Mmap,
-}
-
-#[derive(Copy, Clone)]
 pub struct SyncOptions {
-    /// Wether to preserve permissions of the source file after the destination is written.
     pub preserve_permissions: bool,
     pub perform_dry_run: bool,
     pub delete: bool,
     pub delete_before: bool,
     pub delete_after: bool,
+    pub exclude: Vec<String>,
 }
 
 impl Default for SyncOptions {
@@ -191,6 +184,7 @@ impl Default for SyncOptions {
             delete: false,
             delete_before: false,
             delete_after: false,
+            exclude: Vec::new(),
         }
     }
 }
@@ -229,7 +223,7 @@ pub fn sync(
     if options.delete {
         progress_bar.set_message("Copy and delete phase");
     }
-    sync_path(source_path, destination_path, options, &progress_bar).merge(&status);
+    status = sync_path(source_path, destination_path, options, &progress_bar).merge(&status);
     if options.delete_after {
         progress_bar.set_message("Delete after phase");
         progress_bar.set_position(0);
@@ -271,6 +265,15 @@ fn sync_path(
             let metadata = metadata.unwrap();
             let source_relative = source_path.strip_prefix(&*source_base).unwrap();
             let destination_path = destination_base.join(&source_relative);
+            if skip_path(&metadata, &source_path, &options.exclude) {
+                let mut status = SyncStatus::default();
+                match metadata.file_type() {
+                    file_type if file_type.is_dir() => status.dirs_total = 1,
+                    file_type if file_type.is_symlink() => status.links_total = 1,
+                    _ => status.files_total = 1,
+                }
+                return status;
+            }
             if metadata.is_dir() {
                 debug!(
                     "Syncing directory: {} -> {}",
@@ -331,6 +334,9 @@ fn delete_path(
             let metadata = metadata.unwrap();
             let source_relative = source_path.strip_prefix(&*source_base).unwrap();
             let destination_path = destination_base.join(&source_relative);
+            if skip_path(&metadata, &source_path, &options.exclude) {
+                return SyncStatus::default();
+            }
             if metadata.is_dir() {
                 debug!(
                     "Syncing absent directory: {} -> {}",
@@ -357,6 +363,46 @@ fn delete_path(
             }
         })
         .reduce(|| SyncStatus::default(), |a, b| a.merge(&b))
+}
+
+fn skip_path(metadata: &Metadata, source_path: &PathBuf, excluded: &Vec<String>) -> bool {
+    let source = source_path.file_name().unwrap().to_string_lossy();
+
+    for pattern in excluded {
+        if pattern.is_empty() {
+            continue;
+        }
+        if pattern.as_str() == source {
+            debug!(
+                "Skipping {} because {} == {}",
+                source_path.display(),
+                pattern,
+                source
+            );
+            return true;
+        }
+        if pattern.ends_with('/') && metadata.is_dir() && pattern[..pattern.len() - 1] == source {
+            debug!(
+                "Skipping dir {} because {} == {}/",
+                source_path.display(),
+                pattern,
+                source
+            );
+            return true;
+        }
+        if glob_match(pattern, source_path.to_string_lossy().as_ref())
+            || glob_match(pattern, &source)
+        {
+            debug!(
+                "Skipping {} because {} matches {}",
+                source_path.display(),
+                source,
+                pattern
+            );
+            return true;
+        }
+    }
+    false
 }
 
 fn copy_permissions(metadata: &Metadata, destination: &PathBuf) -> Result<(), Error> {
