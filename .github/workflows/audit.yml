@@ -2,20 +2,14 @@ name: Audit dependencies
 on:
   schedule:
     - cron:  '0 1 * * *'
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   security_audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v1
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-
-      - uses: actions-rs/audit-check@v1.2.0
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

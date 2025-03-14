@@ -5,6 +5,9 @@ on:
     tags:
     - 'v*'
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
 
   release:
@@ -16,44 +19,32 @@ jobs:
         include:
          - os: ubuntu-latest
            name: linux
-           artifact: rusync-linux
+           artifact: plsync-linux
          - os: macos-latest
            name: osx
-           artifact: rusync-osx
+           artifact: plsync-osx
          - os: windows-latest
            name: windows
-           artifact: rusync-windows.exe
+           artifact: plsync-windows.exe
 
     steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
 
-    - name: Checkout code
-      uses: actions/checkout@v1
+      - name: Rename artifacts - Linux, macOS
+        if: matrix.name != 'windows'
+        run: mv target/release/plsync ${{ matrix.artifact }}
 
-    - name: Install latest stable toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        override: true
+      - name: Rename artifacts - Windows
+        if: matrix.name == 'windows'
+        run: |
+          Move-Item -Path target\release\plsync.exe -Destination ${{ matrix.artifact }}
+        shell: powershell
 
-    - name: Build
-      uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --release
-
-    - name: Rename artifacts - Linux, macOS
-      if: matrix.name != 'windows'
-      run: mv target/release/rusync ${{ matrix.artifact }}
-
-    - name: Rename artifacts - Windows
-      if: matrix.name == 'windows'
-      run: |
-         Move-Item -Path target\release\rusync.exe -Destination ${{ matrix.artifact }}
-      shell: powershell
-
-    - name: Upload assets
-      uses: softprops/action-gh-release@v1
-      with:
-        files: rusync-*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: plsync-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
