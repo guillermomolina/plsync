@@ -588,16 +588,6 @@ fn sync_file(
         source.display(),
         destination.display()
     );
-    if let Err(e) = ensure_parent_exists(&destination) {
-        error!(
-            "Failed to create parent directory: {}, {}",
-            destination.display(),
-            e
-        );
-        status.files_errors = 1;
-        return status;
-    }
-
     let bytes_copied = if options.perform_dry_run {
         debug!(
             "Would copy: {} -> {}",
@@ -606,6 +596,16 @@ fn sync_file(
         );
         source_length
     } else {
+        if let Err(e) = ensure_parent_exists(&destination) {
+            error!(
+                "Failed to create parent directory: {}, {}",
+                destination.display(),
+                e
+            );
+            status.files_errors = 1;
+            return status;
+        }
+    
         let copy_outcome = std::fs::copy(&source, &destination);
         if copy_outcome.is_err() {
             error!(

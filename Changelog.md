@@ -1,3 +1,8 @@
+# v0.2.1
+
+- Add tests and fix bugs detected
+
+
 # v0.2.0
 
 - Add --exclude parameter and functionality

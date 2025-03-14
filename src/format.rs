@@ -7,12 +7,12 @@ use number_prefix::NumberPrefix;
 /// # Examples
 /// ```rust
 /// # use plsync::DecimalCount;
-/// assert_eq!("15 ",    format!("{}", DecimalCount(15)));
-/// assert_eq!("1.50 K", format!("{}", DecimalCount(1_500)));
-/// assert_eq!("1.50 M", format!("{}", DecimalCount(1_500_000)));
-/// assert_eq!("1.50 G", format!("{}", DecimalCount(1_500_000_000)));
-/// assert_eq!("1.50 T", format!("{}", DecimalCount(1_500_000_000_000)));
-/// assert_eq!("1.50 P", format!("{}", DecimalCount(1_500_000_000_000_000)));
+/// assert_eq!("15 ",    format!("{}", DecimalCount(15.0)));
+/// assert_eq!("1.50 k", format!("{}", DecimalCount(1_500.0)));
+/// assert_eq!("1.50 M", format!("{}", DecimalCount(1_500_000.0)));
+/// assert_eq!("1.50 G", format!("{}", DecimalCount(1_500_000_000.0)));
+/// assert_eq!("1.50 T", format!("{}", DecimalCount(1_500_000_000_000.0)));
+/// assert_eq!("1.50 P", format!("{}", DecimalCount(1_500_000_000_000_000.0)));
 /// ```
 #[derive(Debug)]
 pub struct DecimalCount(pub f64);

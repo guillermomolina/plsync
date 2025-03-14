@@ -1,8 +1,7 @@
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use log::{error, info, warn};
-use plsync::{sync, DecimalCount, SyncOptions};
-use rayon::{ThreadPoolBuildError, ThreadPoolBuilder};
+use plsync::{set_thread_pool, sync, DecimalCount, SyncOptions};
 use std::env;
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -11,7 +10,7 @@ use std::process;
 const MAX_PARALLELISM: usize = 64;
 
 #[derive(Debug, Parser)]
-#[clap(name = "plsync", version = "0.1.0")]
+#[clap(name = "plsync", version = "0.2.1")]
 struct Parameters {
     #[clap(
         long = "no-perms",
@@ -98,16 +97,6 @@ fn get_parallelism(arguments: &Parameters) -> usize {
             process::exit(1);
         }
         parallelism
-    }
-}
-
-fn set_thread_pool(num_threads: usize) -> Result<(), ThreadPoolBuildError> {
-    if num_threads == 0 {
-        ThreadPoolBuilder::new().build_global()
-    } else {
-        ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build_global()
     }
 }
 
