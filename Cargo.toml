@@ -9,10 +9,11 @@ readme = "README.md"
 description = "Parallel local only `rsync` implementation in Rust"
 license = "BSD-3-Clause"
 
-keywords = ["rsync"]
+keywords = ["rsync", "parallel"]
 categories = ["command-line-utilities"]
 
 repository = "https://github.com/guillermomolina/plsync"
+homepage = "https://github.com/guillermomolina/plsync/wiki"
 
 edition = "2021"
 

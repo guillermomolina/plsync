@@ -6,9 +6,8 @@ Parallel local only `rsync` implementation in Rust.
 
 ```
 $ cargo install plsync
-$ plsync test/src test/dest
-:: Syncing from test/src to test/dest …
- 50% 24/50 Downloads/archlinux.iso   00:01:30
+$ plsync --progress test/src test/dest
+[00:00:02] Enumerating 16.56 kentries at 6.97 kentries/sec [Copy phase]
 ```
 
 # Caveat
@@ -35,3 +34,15 @@ Thank you for your understanding!
 
 # Command line options
 
+* `--no-perms` do not preserve permissions (no-op on Windows)
+* `--dry-run` perform a trial run with no changes made
+* `--progress` show progress during transfer
+* `--stats` give some file-transfer stats
+* `--delete` delete extraneous files from dest dirs (not yet implemented)
+* `--delete-before` receiver deletes before xfer, not during
+* `--delete-after` receiver deletes after transfer, not during
+* `--parallelism` maximum number of sync jobs (0 for number of online processors) [default: 0]
+* `--log-level` set the log level [default: error] [possible values: error, warn, info, debug, trace]
+* `--exclude` exclude files matching EXCLUDE
+* `--help` print help
+* `--version` print version
