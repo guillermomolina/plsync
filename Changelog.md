@@ -1,3 +1,8 @@
+# v0.2.2
+
+- Fix linter warnings
+
+
 # v0.2.1
 
 - Add tests and fix bugs detected

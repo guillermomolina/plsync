@@ -23,9 +23,12 @@ test:
 install:
 	cp target/$(target)/$(prog) ~/bin/$(prog)$(extension)
 
+lint:
+	cargo clippy --all-targets -- -D warnings
+
 publish:
-  cargo publish
-  
+	cargo publish
+
 all: build test install
 
 docker:

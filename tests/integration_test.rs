@@ -72,8 +72,7 @@ fn make_recent(path: &Path) -> io::Result<()> {
 }
 
 fn new_sync_options() -> plsync::SyncOptions {
-    let sync_options = plsync::SyncOptions::default();
-    sync_options
+    plsync::SyncOptions::default()
 }
 
 fn new_progress_bar() -> ProgressBar {

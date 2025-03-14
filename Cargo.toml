@@ -1,6 +1,6 @@
 [package]
 name = "plsync"
-version = "0.2.1"
+version = "0.2.2"
 authors = [
     "Guillermo Adrián Molina <guillermoadrianmolina@hotmail.com>",
 ]
