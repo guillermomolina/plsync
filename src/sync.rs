@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use std::any::Any;
 use std::fs::Metadata;
 use std::io::Error;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -405,6 +406,7 @@ fn skip_path(metadata: &Metadata, source_path: &PathBuf, excluded: &Vec<String>)
     false
 }
 
+#[cfg(unix)]
 fn copy_permissions(metadata: &Metadata, destination: &PathBuf) -> Result<(), Error> {
     let permissions = metadata.permissions();
     debug!(
@@ -419,7 +421,8 @@ fn sync_dir(
     _source: &PathBuf,
     destination: &PathBuf,
     options: &SyncOptions,
-    metadata: &Metadata,
+    #[cfg(unix)] metadata: &Metadata,
+    #[cfg(windows)] _metadata: &Metadata,
 ) -> SyncStatus {
     let mut status = SyncStatus::default();
     status.dirs_total = 1;
@@ -539,10 +542,13 @@ fn sync_symlink(
             destination.display(),
             link.display()
         );
-        if let Err(e) = std::os::unix::fs::symlink(&link, &destination) {
-            error!("Failed to create symlink: {}, {}", destination.display(), e);
-            status.links_errors = 1;
-            return status;
+        #[cfg(unix)]
+        {
+            if let Err(e) = std::os::unix::fs::symlink(&link, &destination) {
+                error!("Failed to create symlink: {}, {}", destination.display(), e);
+                status.links_errors = 1;
+                return status;
+            }
         }
     }
     info!(
@@ -605,7 +611,7 @@ fn sync_file(
             status.files_errors = 1;
             return status;
         }
-    
+
         let copy_outcome = std::fs::copy(&source, &destination);
         if copy_outcome.is_err() {
             error!(
