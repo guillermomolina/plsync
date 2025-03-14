@@ -1,6 +1,7 @@
 # v0.2.1
 
 - Add tests and fix bugs detected
+- Add github actions
 
 
 # v0.2.0
@@ -16,6 +17,7 @@
 - Add --delete-after parameter and functionality
 - Add --delete-before parameter and functionality
 - Change --delete to not yet implemented
+
 
 # v0.0.1
 
