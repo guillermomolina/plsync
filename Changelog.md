@@ -1,6 +1,9 @@
 # v0.2.2
 
 - Fix linter warnings
+- Bump env_logger to 0.11
+- Bump clap to 4.5
+- Add cargo-edit for cargo upgrade
 
 
 # v0.2.1

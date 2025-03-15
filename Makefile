@@ -29,6 +29,10 @@ lint:
 publish:
 	cargo publish
 
+upgrade:
+	cargo upgrade -i allow
+	cargo update
+
 all: build test install
 
 docker:
