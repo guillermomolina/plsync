@@ -1,3 +1,9 @@
+# v0.3.0
+
+- Add copy owner and group
+- Fix permission not copied on previously existing files files
+
+
 # v0.2.2
 
 - Fix linter warnings

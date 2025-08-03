@@ -21,5 +21,9 @@ RUN apk add --no-cache libgcc
 # copy the binary into the final image
 COPY --from=0 /app/target/release/plsync /usr/bin/plsync
 
+VOLUME [ "/source", "/target" ]
+
+ENV PARALLELISM=0
+
 # set the binary as entrypoint
-CMD ["/usr/bin/plsync"]
+CMD /usr/bin/plsync --parallelism=${PARALLELISM} --log-level=info /source/ /target/

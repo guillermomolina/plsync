@@ -4,10 +4,13 @@ use indicatif::{
     FormattedDuration, HumanBytes, HumanFloatCount, ParallelProgressIterator, ProgressBar,
 };
 use log::{debug, error, info, warn};
+use nix::libc;
 use rayon::prelude::*;
 use std::any::Any;
 use std::fs::Metadata;
 use std::io::Error;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -198,7 +201,10 @@ pub fn sync(
 ) -> SyncStatus {
     if !source_path.is_dir() {
         error!("Source path is not a directory: {}", source_path.display());
-        return SyncStatus { dirs_errors: 1, ..Default::default() };
+        return SyncStatus {
+            dirs_errors: 1,
+            ..Default::default()
+        };
     }
     if !destination_path.is_dir() && !options.perform_dry_run {
         if let Err(e) = std::fs::create_dir_all(destination_path) {
@@ -207,7 +213,10 @@ pub fn sync(
                 destination_path.display(),
                 e
             );
-            return SyncStatus { dirs_errors: 1, ..Default::default() };
+            return SyncStatus {
+                dirs_errors: 1,
+                ..Default::default()
+            };
         }
     }
     let mut status = SyncStatus::default();
@@ -237,7 +246,10 @@ fn sync_path(
 ) -> SyncStatus {
     let source_dir = std::fs::read_dir(source_base);
     if source_dir.is_err() {
-        return SyncStatus { permissions_errors: 1, ..Default::default() };
+        return SyncStatus {
+            permissions_errors: 1,
+            ..Default::default()
+        };
     }
     source_dir
         .unwrap()
@@ -413,7 +425,26 @@ fn copy_permissions(metadata: &Metadata, destination: &PathBuf) -> Result<(), Er
         permissions.mode(),
         destination.display()
     );
-    std::fs::set_permissions(destination, permissions)
+    std::fs::set_permissions(destination, permissions)?;
+
+    // Only attempt to copy owner and group if running as root
+    if unsafe { libc::geteuid() } == 0 {
+        let uid = metadata.uid();
+        let gid = metadata.gid();
+        use std::ffi::CString;
+        let c_path = CString::new(destination.as_os_str().as_bytes()).unwrap();
+        debug!(
+            "Setting owner {:o} and group {:o} on {}",
+            uid,
+            gid,
+            destination.display()
+        );
+        let res = unsafe { libc::chown(c_path.as_ptr(), uid, gid) };
+        if res != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 fn sync_dir(
@@ -571,7 +602,7 @@ fn sync_file(
     metadata: &Metadata,
 ) -> SyncStatus {
     let mut status = SyncStatus::default();
-    let files_differs = files_differs(destination, metadata).unwrap();
+    let files_differs = files_differs(destination, options, metadata).unwrap();
     let source_length = metadata.len();
     status.files_total = 1;
     status.bytes_total = source_length;
@@ -628,6 +659,19 @@ fn sync_file(
             status.files_errors = 1;
             return status;
         }
+        #[cfg(unix)]
+        {
+            if !options.perform_dry_run && options.preserve_permissions {
+                if let Err(e) = copy_permissions(metadata, destination) {
+                    error!(
+                        "Failed to set permissions on directory: {}, {}",
+                        destination.display(),
+                        e
+                    );
+                    status.permissions_errors = 1;
+                }
+            }
+        }
         info!(
             "Copied file: {} -> {}",
             source.display(),
@@ -680,12 +724,41 @@ fn ensure_parent_exists(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn files_differs(destination: &Path, src_meta: &Metadata) -> Result<bool, Error> {
+fn files_differs(
+    destination: &Path,
+    options: &SyncOptions,
+    src_meta: &Metadata,
+) -> Result<bool, Error> {
     if !destination.exists() {
         return Ok(true);
     }
 
     let dest_meta = destination.metadata()?;
+
+    if options.preserve_permissions {
+        #[cfg(unix)]
+        {
+            let src_perm = src_meta.permissions().mode();
+            let dest_perm = dest_meta.permissions().mode();
+            if src_perm != dest_perm {
+                return Ok(true);
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            // Only compare uid/gid if running as root
+            if unsafe { libc::geteuid() } == 0 {
+                let src_uid = src_meta.uid();
+                let src_gid = src_meta.gid();
+                let dest_uid = dest_meta.uid();
+                let dest_gid = dest_meta.gid();
+                if src_uid != dest_uid || src_gid != dest_gid {
+                    return Ok(true);
+                }
+            }
+        }
+    }
 
     let src_mtime = FileTime::from_last_modification_time(src_meta);
     let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
