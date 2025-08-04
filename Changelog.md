@@ -1,3 +1,9 @@
+# v0.4.0
+
+- Add copy date and time
+- Fix permission always copied on dirs
+
+
 # v0.3.0
 
 - Add copy owner and group

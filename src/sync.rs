@@ -1,3 +1,4 @@
+use filetime::set_symlink_file_times;
 use filetime::FileTime;
 use glob_match::glob_match;
 use indicatif::{
@@ -235,6 +236,16 @@ pub fn sync(
         progress_bar.set_position(0);
         status = delete_path(destination_path, source_path, options, progress_bar).merge(&status);
     }
+    if !options.perform_dry_run {
+         if let Err(e) = copy_modification_time(&source_path.metadata().unwrap(), &destination_path.to_path_buf()) {
+            error!(
+                "Failed to set modification time on dry run: {} -> {}, {}",
+                source_path.display(),
+                destination_path.display(),
+                e
+            );
+        }
+    }
     status
 }
 
@@ -290,7 +301,13 @@ fn sync_path(
                     destination_path.display()
                 );
                 let status = sync_dir(&source_path, &destination_path, options, &metadata);
-                sync_path(&source_path, &destination_path, options, progress_bar).merge(&status)
+                sync_path(&source_path, &destination_path, options, progress_bar).merge(&status);
+                sync_dir_modification_times(
+                    &source_path,
+                    &destination_path,
+                    options,
+                    &metadata,
+                ).merge(&status)
             } else if metadata.is_symlink() {
                 debug!(
                     "Syncing symlink: {} -> {}",
@@ -420,28 +437,90 @@ fn skip_path(metadata: &Metadata, source_path: &Path, excluded: &Vec<String>) ->
 #[cfg(unix)]
 fn copy_permissions(metadata: &Metadata, destination: &PathBuf) -> Result<(), Error> {
     let permissions = metadata.permissions();
-    debug!(
-        "Setting permissions {:o} on {}",
-        permissions.mode(),
-        destination.display()
-    );
-    std::fs::set_permissions(destination, permissions)?;
-
-    // Only attempt to copy owner and group if running as root
-    if unsafe { libc::geteuid() } == 0 {
-        let uid = metadata.uid();
-        let gid = metadata.gid();
-        use std::ffi::CString;
-        let c_path = CString::new(destination.as_os_str().as_bytes()).unwrap();
+    let dest_meta = destination.metadata().unwrap();
+    let dest_perm = dest_meta.permissions();
+    if permissions != dest_perm {
         debug!(
-            "Setting owner {:o} and group {:o} on {}",
-            uid,
-            gid,
+            "Setting permissions {:o} on {}",
+            permissions.mode(),
             destination.display()
         );
-        let res = unsafe { libc::chown(c_path.as_ptr(), uid, gid) };
-        if res != 0 {
-            return Err(std::io::Error::last_os_error());
+        std::fs::set_permissions(destination, permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_ownership(metadata: &Metadata, destination: &PathBuf) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        if unsafe { libc::geteuid() } == 0 {
+            let dest_meta = destination.metadata().unwrap();
+            let src_uid = metadata.uid();
+            let src_gid = metadata.gid();
+            let dest_uid = dest_meta.uid();
+            let dest_gid = dest_meta.gid();
+            if src_uid != dest_uid || src_gid != dest_gid {
+                use std::ffi::CString;
+                let c_path = CString::new(destination.as_os_str().as_bytes()).unwrap();
+                debug!(
+                    "Setting owner {:o} and group {:o} on {}",
+                    src_uid,
+                    src_gid,
+                    destination.display()
+                );
+                let res = unsafe { libc::chown(c_path.as_ptr(), src_uid, src_gid) };
+                if res != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_modification_time(metadata: &Metadata, destination: &PathBuf) -> Result<(), Error> {
+    let src_mtime = FileTime::from_last_modification_time(metadata);
+    let dest_meta = destination.metadata().unwrap();
+    let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
+    if src_mtime != dest_mtime {
+        debug!(
+            "Setting modification time {:?} on {}",
+            src_mtime.unix_seconds(),
+            destination.display()
+        );
+        #[cfg(unix)]
+        {
+            if destination.symlink_metadata()?.file_type().is_symlink() {
+                if let Err(e) = set_symlink_file_times(destination, src_mtime, src_mtime) {
+                    error!(
+                        "Failed to set symlink modification time on: {}, {}",
+                        destination.display(),
+                        e
+                    );
+                    return Err(e);
+                }
+            } else {
+                if let Err(e) = filetime::set_file_mtime(destination, src_mtime) {
+                    error!(
+                        "Failed to set modification time on: {}, {}",
+                        destination.display(),
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if let Err(e) = filetime::set_file_mtime(destination, src_mtime) {
+                error!(
+                    "Failed to set modification time on: {}, {}",
+                    destination.display(),
+                    e
+                );
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -464,7 +543,16 @@ fn sync_dir(
         } else {
             // assert_parent_exists(&destination)?;
             debug!("Creating directory: {}", destination.display());
-            if let Err(e) = std::fs::create_dir_all(destination) {
+            if let Err(e) = ensure_parent_exists(destination) {
+                error!(
+                    "Failed to create parent directory: {}, {}",
+                    destination.display(),
+                    e
+                );
+                status.dirs_errors = 1;
+                return status;
+            }
+            if let Err(e) = std::fs::create_dir(destination) {
                 error!(
                     "Failed to create directory: {}, {}",
                     destination.display(),
@@ -477,6 +565,7 @@ fn sync_dir(
         info!("Created directory: {}", destination.display());
         status.dirs_copied = 1;
     }
+
     #[cfg(unix)]
     {
         if !options.perform_dry_run && options.preserve_permissions {
@@ -490,6 +579,54 @@ fn sync_dir(
             }
         }
     }
+
+    #[cfg(unix)]
+    {
+        if !options.perform_dry_run && options.preserve_permissions {
+            if let Err(e) = copy_ownership(metadata, destination) {
+                error!(
+                    "Failed to set ownership on directory: {}, {}",
+                    destination.display(),
+                    e
+                );
+                status.permissions_errors = 1;
+            }
+        }
+    }
+    status
+}
+
+fn sync_dir_modification_times(
+    _source: &Path,
+    destination: &PathBuf,
+    options: &SyncOptions,
+    #[cfg(unix)] metadata: &Metadata,
+    #[cfg(windows)] _metadata: &Metadata,
+) -> SyncStatus {
+    let mut status = SyncStatus {
+        dirs_total: 1,
+        ..Default::default()
+    };
+    if !destination.exists() {
+        error!(
+            "Failed to create directory: {}",
+            destination.display()
+        );
+        status.dirs_errors = 1;
+        return status;
+    }
+
+    if !options.perform_dry_run {
+        if let Err(e) = copy_modification_time(metadata, destination) {
+            error!(
+                "Failed to set modification time on directory: {}, {}",
+                destination.display(),
+                e
+            );
+            status.dirs_errors = 1;
+        }
+    }
+
     status
 }
 
@@ -516,7 +653,7 @@ fn sync_symlink(
     source: &PathBuf,
     destination: &PathBuf,
     options: &SyncOptions,
-    _metadata: &Metadata,
+    metadata: &Metadata,
 ) -> SyncStatus {
     let mut status = SyncStatus {
         links_total: 1,
@@ -538,60 +675,102 @@ fn sync_symlink(
         let destination_metadata = destination_metadata.unwrap();
         if destination_metadata.file_type().is_symlink() {
             let destination_link = std::fs::read_link(destination).unwrap();
-            if destination_link == link {
-                return status;
-            }
-        }
-        if options.perform_dry_run {
-            debug!("Would delete existing file: {}", destination.display());
-        } else {
-            debug!("Deleting existing file: {}", destination.display());
-            if let Err(e) = std::fs::remove_file(destination) {
-                status.links_errors = 1;
-                error!(
-                    "Failed to delete existing file: {}, {}",
-                    destination.display(),
-                    e
-                );
-                return status;
+            if destination_link != link {
+                if options.perform_dry_run {
+                    debug!("Would delete existing file: {}", destination.display());
+                } else {
+                    debug!("Deleting existing file: {}", destination.display());
+                    if let Err(e) = std::fs::remove_file(destination) {
+                        status.links_errors = 1;
+                        error!(
+                            "Failed to delete existing file: {}, {}",
+                            destination.display(),
+                            e
+                        );
+                        return status;
+                    }
+                }
+                info!("Deleted existing file: {}", destination.display());
             }
         }
     }
-    if options.perform_dry_run {
-        debug!(
-            "Would create symlink: {} -> {}",
-            destination.display(),
-            link.display()
-        );
-    } else {
-        if let Err(e) = ensure_parent_exists(destination) {
+    if !destination.exists() {
+        if options.perform_dry_run {
+            debug!(
+                "Would create symlink: {} -> {}",
+                destination.display(),
+                link.display()
+            );
+        } else {
+            if let Err(e) = ensure_parent_exists(destination) {
+                error!(
+                    "Failed to create parent directory: {}, {}",
+                    destination.display(),
+                    e
+                );
+                status.links_errors = 1;
+                return status;
+            }
+            debug!(
+                "Creating symlink: {} -> {}",
+                destination.display(),
+                link.display()
+            );
+            #[cfg(unix)]
+            {
+                if let Err(e) = std::os::unix::fs::symlink(&link, destination) {
+                    error!("Failed to create symlink: {}, {}", destination.display(), e);
+                    status.links_errors = 1;
+                    return status;
+                }
+            }
+
+            info!(
+                "Created symlink: {} -> {}",
+                destination.display(),
+                link.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if !options.perform_dry_run && options.preserve_permissions {
+            if let Err(e) = copy_permissions(metadata, destination) {
+                error!(
+                    "Failed to set permissions on link: {}, {}",
+                    destination.display(),
+                    e
+                );
+                status.permissions_errors = 1;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if !options.perform_dry_run && options.preserve_permissions {
+            if let Err(e) = copy_ownership(metadata, destination) {
+                error!(
+                    "Failed to set ownership on link: {}, {}",
+                    destination.display(),
+                    e
+                );
+                status.permissions_errors = 1;
+            }
+        }
+    }
+
+    if !options.perform_dry_run {
+        if let Err(e) = copy_modification_time(metadata, destination) {
             error!(
-                "Failed to create parent directory: {}, {}",
+                "Failed to set modification time on link: {}, {}",
                 destination.display(),
                 e
             );
             status.links_errors = 1;
-            return status;
-        }
-        debug!(
-            "Creating symlink: {} -> {}",
-            destination.display(),
-            link.display()
-        );
-        #[cfg(unix)]
-        {
-            if let Err(e) = std::os::unix::fs::symlink(&link, destination) {
-                error!("Failed to create symlink: {}, {}", destination.display(), e);
-                status.links_errors = 1;
-                return status;
-            }
         }
     }
-    info!(
-        "Created symlink: {} -> {}",
-        destination.display(),
-        link.display()
-    );
     status
 }
 
@@ -602,34 +781,10 @@ fn sync_file(
     metadata: &Metadata,
 ) -> SyncStatus {
     let mut status = SyncStatus::default();
-    let files_differs = files_differs(destination, options, metadata).unwrap();
     let source_length = metadata.len();
     status.files_total = 1;
     status.bytes_total = source_length;
-    if destination.exists() {
-        if !destination.is_file() {
-            error!(
-                "Failed to change: {} of type {:?}",
-                destination.display(),
-                destination.type_id()
-            );
-            status.files_errors = 1;
-            return status;
-        }
-        if !files_differs {
-            debug!(
-                "File up to date, no need to copy: {} -> {}",
-                source.display(),
-                destination.display()
-            );
-            return status;
-        }
-    }
-    debug!(
-        "Copying file: {} -> {}",
-        source.display(),
-        destination.display()
-    );
+
     let bytes_copied = if options.perform_dry_run {
         debug!(
             "Would copy: {} -> {}",
@@ -638,50 +793,104 @@ fn sync_file(
         );
         source_length
     } else {
-        if let Err(e) = ensure_parent_exists(destination) {
-            error!(
-                "Failed to create parent directory: {}, {}",
-                destination.display(),
-                e
-            );
-            status.files_errors = 1;
-            return status;
-        }
-
-        let copy_outcome = std::fs::copy(source, destination);
-        if copy_outcome.is_err() {
-            error!(
-                "Failed to copy file: {} -> {}, {}",
-                source.display(),
-                destination.display(),
-                copy_outcome.unwrap_err()
-            );
-            status.files_errors = 1;
-            return status;
-        }
-        #[cfg(unix)]
-        {
-            if !options.perform_dry_run && options.preserve_permissions {
-                if let Err(e) = copy_permissions(metadata, destination) {
-                    error!(
-                        "Failed to set permissions on directory: {}, {}",
-                        destination.display(),
-                        e
-                    );
-                    status.permissions_errors = 1;
-                }
-            }
-        }
-        info!(
-            "Copied file: {} -> {}",
-            source.display(),
-            destination.display()
-        );
+        let copy_outcome = copy_file_data(source, destination, metadata);
         copy_outcome.unwrap()
     };
     status.bytes_copied = bytes_copied;
     status.files_copied = 1;
+
+    #[cfg(unix)]
+    {
+        if !options.perform_dry_run && options.preserve_permissions {
+            if let Err(e) = copy_permissions(metadata, destination) {
+                error!(
+                    "Failed to set permissions on file: {}, {}",
+                    destination.display(),
+                    e
+                );
+                status.permissions_errors = 1;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if !options.perform_dry_run && options.preserve_permissions {
+            if let Err(e) = copy_ownership(metadata, destination) {
+                error!(
+                    "Failed to set ownership on file: {}, {}",
+                    destination.display(),
+                    e
+                );
+                status.permissions_errors = 1;
+            }
+        }
+    }
+
+    if !options.perform_dry_run {
+        if let Err(e) = copy_modification_time(metadata, destination) {
+            error!(
+                "Failed to set modification time on file: {}, {}",
+                destination.display(),
+                e
+            );
+            status.files_errors = 1;
+        }
+    }
+
     status
+}
+
+fn copy_file_data(
+    source: &PathBuf,
+    destination: &PathBuf,
+    metadata: &Metadata,
+) -> Result<u64, Error> {
+    if destination.exists() {
+        if !destination.is_file() {
+            error!(
+                "Failed to change: {} of type {:?}",
+                destination.display(),
+                destination.type_id()
+            );
+        }
+        let src_mtime = FileTime::from_last_modification_time(metadata);
+        let dest_meta = destination.metadata()?;
+        let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
+
+        let src_size = metadata.len();
+        let dest_size = dest_meta.len();
+
+        if src_mtime <= dest_mtime && src_size == dest_size {
+            debug!(
+                "File is up to date, skipping copy: {} -> {}",
+                source.display(),
+                destination.display()
+            );
+            return Ok(0);
+        }
+    }
+
+    if let Err(e) = ensure_parent_exists(destination) {
+        error!(
+            "Failed to create parent directory: {}, {}",
+            destination.display(),
+            e
+        );
+        return Err(e);
+    }
+    debug!(
+        "Copying file data: {} -> {}",
+        source.display(),
+        destination.display()
+    );
+    let bytes_copied = std::fs::copy(source, destination)?;
+    info!(
+        "Copied file data: {} -> {}",
+        source.display(),
+        destination.display()
+    );
+    Ok(bytes_copied)
 }
 
 fn delete_file_or_link(source: &PathBuf, options: &SyncOptions, metadata: &Metadata) -> SyncStatus {
@@ -722,49 +931,4 @@ fn ensure_parent_exists(path: &Path) -> Result<(), Error> {
         std::fs::create_dir_all(path_parent)?;
     }
     Ok(())
-}
-
-fn files_differs(
-    destination: &Path,
-    options: &SyncOptions,
-    src_meta: &Metadata,
-) -> Result<bool, Error> {
-    if !destination.exists() {
-        return Ok(true);
-    }
-
-    let dest_meta = destination.metadata()?;
-
-    if options.preserve_permissions {
-        #[cfg(unix)]
-        {
-            let src_perm = src_meta.permissions().mode();
-            let dest_perm = dest_meta.permissions().mode();
-            if src_perm != dest_perm {
-                return Ok(true);
-            }
-        }
-
-        #[cfg(unix)]
-        {
-            // Only compare uid/gid if running as root
-            if unsafe { libc::geteuid() } == 0 {
-                let src_uid = src_meta.uid();
-                let src_gid = src_meta.gid();
-                let dest_uid = dest_meta.uid();
-                let dest_gid = dest_meta.gid();
-                if src_uid != dest_uid || src_gid != dest_gid {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-
-    let src_mtime = FileTime::from_last_modification_time(src_meta);
-    let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
-
-    let src_size = src_meta.len();
-    let dest_size = dest_meta.len();
-
-    Ok(src_mtime > dest_mtime || src_size != dest_size)
 }
